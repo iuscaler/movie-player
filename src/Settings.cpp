@@ -9,6 +9,9 @@ namespace {
 
 constexpr wchar_t kPlayerSection[] = L"Player";
 constexpr wchar_t kWindowSection[] = L"Window";
+constexpr wchar_t kVideoSection[] = L"Video";
+constexpr std::array<const wchar_t*, kVideoAdjustmentCount> kAdjustmentKeys{L"Brightness", L"Contrast", L"Saturation", L"Hue", L"Gamma"};
+constexpr int kMaxAdjustment = 100;
 constexpr double kMaxVolume = 130.0;  // mpv's default volume-max.
 constexpr LONG kMinWindowSize = 100;
 constexpr int kMissing = INT_MIN;
@@ -73,6 +76,13 @@ Settings LoadSettings() {
         settings.windowPosition = RECT{left, top, right, bottom};
     }
     settings.windowMaximized = ReadInt(path, kWindowSection, L"Maximized") == 1;
+
+    for (size_t i = 0; i < kAdjustmentKeys.size(); ++i) {
+        const int value = ReadInt(path, kVideoSection, kAdjustmentKeys[i]);
+        if (value >= -kMaxAdjustment && value <= kMaxAdjustment) {
+            settings.videoAdjustments[i] = value;
+        }
+    }
     return settings;
 }
 
@@ -95,4 +105,7 @@ void SaveSettings(const Settings& settings) {
         WriteInt(path, kWindowSection, L"Bottom", settings.windowPosition->bottom);
     }
     WriteInt(path, kWindowSection, L"Maximized", settings.windowMaximized ? 1 : 0);
+    for (size_t i = 0; i < kAdjustmentKeys.size(); ++i) {
+        WriteInt(path, kVideoSection, kAdjustmentKeys[i], settings.videoAdjustments[i]);
+    }
 }

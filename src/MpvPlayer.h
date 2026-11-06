@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -32,6 +33,12 @@ enum class SubtitleEncoding {
     Auto,    // Let mpv guess. It handles Shift-JIS and others, but misreads CP949.
 };
 
+enum class AspectMode { Original, Ratio16x9, Ratio4x3, Ratio235x100, Stretch };
+
+// Picture settings, each from -100 to 100 with 0 meaning unchanged.
+enum class VideoAdjustment { Brightness, Contrast, Saturation, Hue, Gamma };
+inline constexpr size_t kVideoAdjustmentCount = 5;
+
 // What the UI needs to know about playback. Values mpv doesn't know yet (for
 // example while a file is loading) are empty.
 struct PlaybackState {
@@ -44,6 +51,13 @@ struct PlaybackState {
     std::vector<MediaTrack> tracks;
     double subtitleDelay = 0.0;
     SubtitleEncoding subtitleEncoding = SubtitleEncoding::Korean;
+    double speed = 1.0;
+    double audioDelay = 0.0;
+    std::optional<double> loopStart;
+    std::optional<double> loopEnd;
+    AspectMode aspect = AspectMode::Original;
+    int rotation = 0;
+    std::array<int, kVideoAdjustmentCount> adjustments{};
 };
 
 // Owns the libmpv instance. All libmpv calls in the app go through this class,
@@ -62,10 +76,13 @@ public:
         std::function<void(const std::wstring& message)> playbackError;
         std::function<void()> subtitleLoadFailed;
         std::function<void(const PlaybackState& state)> stateChanged;
+        // A newly opened video is ready to show, at this size in pixels. Not called for audio.
+        std::function<void(int width, int height)> videoReady;
     };
 
     // Renders into videoWindow. Throws std::runtime_error if mpv can't start.
-    MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, SubtitleEncoding subtitleEncoding);
+    MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, SubtitleEncoding subtitleEncoding,
+              const std::array<int, kVideoAdjustmentCount>& videoAdjustments);
     ~MpvPlayer();
 
     MpvPlayer(const MpvPlayer&) = delete;
@@ -79,6 +96,27 @@ public:
     // keyframe, which is much faster on heavy video.
     void SeekTo(double seconds, bool exact);
     void ChangeVolume(int delta);
+    void SetVolume(double volume);
+
+    // Both keep the speed within the supported range. ChangeSpeed returns the result.
+    void SetSpeed(double speed);
+    double ChangeSpeed(double delta);
+    // The first call marks the loop's start, the second its end, the third clears it.
+    void ToggleLoop();
+    void ClearLoop();
+    void SetLoop(double start, double end);
+    // Pauses if playing, then moves by one frame.
+    void StepFrame(bool forward);
+
+    void SetAspect(AspectMode aspect);
+    void SetRotation(int degrees);
+    // Returns the setting's new value.
+    int ChangeVideoAdjustment(VideoAdjustment adjustment, int delta);
+    void ResetVideoAdjustments();
+
+    // Returns the new delay, in seconds.
+    double ChangeAudioDelay(double seconds);
+    void ResetAudioDelay();
 
     // Adds a subtitle track to the current file, and optionally switches to it.
     void AddSubtitleFile(const std::wstring& path, bool select);
@@ -88,8 +126,6 @@ public:
     void ChangeSubtitleDelay(double seconds);
     void ResetSubtitleDelay();
     void SetSubtitleEncoding(SubtitleEncoding encoding);
-    // Where subtitles sit, as a percentage of the window height. 100 is the bottom.
-    void SetSubtitlePosition(int percent);
 
     // Shows a short message over the video.
     void ShowMessage(const std::wstring& text);
@@ -100,8 +136,10 @@ private:
     void Command(std::initializer_list<const char*> arguments, uint64_t replyId = 0);
     void UpdateState(const mpv_event_property& property);
     void UpdateTracks(const mpv_node& list);
+    void ReportVideoSizeIfPending();
 
     mpv_handle* mpv_ = nullptr;
     Callbacks callbacks_;
     PlaybackState state_;
+    bool videoSizePending_ = false;
 };

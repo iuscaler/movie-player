@@ -2,6 +2,8 @@
 
 #include <mpv/client.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -11,6 +13,10 @@
 namespace {
 
 constexpr uint64_t kAddSubtitleReply = 1;
+constexpr double kMinSpeed = 0.25;
+constexpr double kMaxSpeed = 4.0;
+constexpr int kMaxAdjustment = 100;
+constexpr std::array<const char*, kVideoAdjustmentCount> kAdjustmentProperties{"brightness", "contrast", "saturation", "hue", "gamma"};
 
 // mpv's API uses UTF-8 strings, while Windows paths are UTF-16.
 std::string ToUtf8(const std::wstring& text) {
@@ -104,10 +110,12 @@ MediaTrack TrackFromNode(const mpv_node& node) {
 
 }  // namespace
 
-MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, SubtitleEncoding subtitleEncoding)
+MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, SubtitleEncoding subtitleEncoding,
+                     const std::array<int, kVideoAdjustmentCount>& videoAdjustments)
     : callbacks_(std::move(callbacks)) {
     state_.volume = volume;
     state_.subtitleEncoding = subtitleEncoding;
+    state_.adjustments = videoAdjustments;
     mpv_ = mpv_create();
     if (!mpv_) {
         throw std::runtime_error("mpv_create failed");
@@ -127,6 +135,10 @@ MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, Subti
         // Unicode files are still recognized with this setting.
         Check(mpv_set_property_string(mpv_, "sub-codepage", EncodingOption(state_.subtitleEncoding)), "set sub-codepage");
         Check(mpv_set_property(mpv_, "volume", MPV_FORMAT_DOUBLE, &state_.volume), "set volume");
+        for (size_t i = 0; i < kAdjustmentProperties.size(); ++i) {
+            const std::string value = std::to_string(state_.adjustments[i]);
+            Check(mpv_set_property_string(mpv_, kAdjustmentProperties[i], value.c_str()), "set picture adjustment");
+        }
         Check(mpv_initialize(mpv_), "mpv_initialize");
 
         // The app finds SMI files itself, since they may need splitting by language.
@@ -140,6 +152,8 @@ MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, Subti
         Check(mpv_observe_property(mpv_, 0, "eof-reached", MPV_FORMAT_FLAG), "observe eof-reached");
         Check(mpv_observe_property(mpv_, 0, "track-list", MPV_FORMAT_NODE), "observe track-list");
         Check(mpv_observe_property(mpv_, 0, "sub-delay", MPV_FORMAT_DOUBLE), "observe sub-delay");
+        Check(mpv_observe_property(mpv_, 0, "ab-loop-a", MPV_FORMAT_DOUBLE), "observe ab-loop-a");
+        Check(mpv_observe_property(mpv_, 0, "ab-loop-b", MPV_FORMAT_DOUBLE), "observe ab-loop-b");
     } catch (...) {
         mpv_terminate_destroy(mpv_);
         throw;
@@ -173,9 +187,14 @@ void MpvPlayer::Open(const std::wstring& path, const std::vector<std::wstring>& 
     // Replaces the list from the previous file. Requests run in order, so this applies to the load below.
     mpv_set_property_async(mpv_, 0, "sub-files", MPV_FORMAT_NODE, &files);
 
+    videoSizePending_ = true;
     const std::string utf8Path = ToUtf8(path);
-    // A sync adjustment belongs to the file it was made for.
+    // These belong to the file they were made for. Speed and picture settings carry over.
     Command({"set", "sub-delay", "0"});
+    ResetAudioDelay();
+    ClearLoop();
+    SetRotation(0);
+    SetAspect(AspectMode::Original);
     Command({"loadfile", utf8Path.c_str()});
     // Reaching the end of the previous file leaves mpv paused, and so does the user.
     Command({"set", "pause", "no"});
@@ -203,6 +222,97 @@ void MpvPlayer::SeekTo(double seconds, bool exact) {
 void MpvPlayer::ChangeVolume(int delta) {
     const std::string amount = std::to_string(delta);
     Command({"add", "volume", amount.c_str()});
+}
+
+void MpvPlayer::SetVolume(double volume) {
+    const std::string value = std::to_string(volume);
+    Command({"set", "volume", value.c_str()});
+}
+
+void MpvPlayer::SetSpeed(double speed) {
+    state_.speed = std::clamp(speed, kMinSpeed, kMaxSpeed);
+    const std::string value = std::to_string(state_.speed);
+    Command({"set", "speed", value.c_str()});
+    callbacks_.stateChanged(state_);
+}
+
+double MpvPlayer::ChangeSpeed(double delta) {
+    // Rounding keeps repeated steps from drifting to values like 1.3000000000000003.
+    SetSpeed(std::round((state_.speed + delta) * 100.0) / 100.0);
+    return state_.speed;
+}
+
+void MpvPlayer::ToggleLoop() {
+    Command({"ab-loop"});
+}
+
+void MpvPlayer::ClearLoop() {
+    Command({"set", "ab-loop-a", "no"});
+    Command({"set", "ab-loop-b", "no"});
+}
+
+void MpvPlayer::SetLoop(double start, double end) {
+    const std::string startValue = std::to_string(start);
+    const std::string endValue = std::to_string(end);
+    Command({"set", "ab-loop-a", startValue.c_str()});
+    Command({"set", "ab-loop-b", endValue.c_str()});
+}
+
+void MpvPlayer::StepFrame(bool forward) {
+    Command({forward ? "frame-step" : "frame-back-step"});
+}
+
+void MpvPlayer::SetAspect(AspectMode aspect) {
+    state_.aspect = aspect;
+    const char* ratio = "no";
+    if (aspect == AspectMode::Ratio16x9) {
+        ratio = "16:9";
+    } else if (aspect == AspectMode::Ratio4x3) {
+        ratio = "4:3";
+    } else if (aspect == AspectMode::Ratio235x100) {
+        ratio = "2.35:1";
+    }
+    Command({"set", "video-aspect-override", ratio});
+    Command({"set", "keepaspect", aspect == AspectMode::Stretch ? "no" : "yes"});
+    callbacks_.stateChanged(state_);
+}
+
+void MpvPlayer::SetRotation(int degrees) {
+    state_.rotation = degrees;
+    const std::string value = std::to_string(degrees);
+    Command({"set", "video-rotate", value.c_str()});
+    callbacks_.stateChanged(state_);
+}
+
+int MpvPlayer::ChangeVideoAdjustment(VideoAdjustment adjustment, int delta) {
+    const size_t index = static_cast<size_t>(adjustment);
+    state_.adjustments[index] = std::clamp(state_.adjustments[index] + delta, -kMaxAdjustment, kMaxAdjustment);
+    const std::string value = std::to_string(state_.adjustments[index]);
+    Command({"set", kAdjustmentProperties[index], value.c_str()});
+    callbacks_.stateChanged(state_);
+    return state_.adjustments[index];
+}
+
+void MpvPlayer::ResetVideoAdjustments() {
+    state_.adjustments.fill(0);
+    for (const char* property : kAdjustmentProperties) {
+        Command({"set", property, "0"});
+    }
+    callbacks_.stateChanged(state_);
+}
+
+double MpvPlayer::ChangeAudioDelay(double seconds) {
+    state_.audioDelay = std::round((state_.audioDelay + seconds) * 1000.0) / 1000.0;
+    const std::string value = std::to_string(state_.audioDelay);
+    Command({"set", "audio-delay", value.c_str()});
+    callbacks_.stateChanged(state_);
+    return state_.audioDelay;
+}
+
+void MpvPlayer::ResetAudioDelay() {
+    state_.audioDelay = 0.0;
+    Command({"set", "audio-delay", "0"});
+    callbacks_.stateChanged(state_);
 }
 
 void MpvPlayer::AddSubtitleFile(const std::wstring& path, bool select) {
@@ -235,11 +345,6 @@ void MpvPlayer::SetSubtitleEncoding(SubtitleEncoding encoding) {
     // Files already loaded were decoded with the old setting.
     Command({"sub-reload"});
     callbacks_.stateChanged(state_);
-}
-
-void MpvPlayer::SetSubtitlePosition(int percent) {
-    const std::string value = std::to_string(percent);
-    Command({"set", "sub-pos", value.c_str()});
 }
 
 void MpvPlayer::ShowMessage(const std::wstring& text) {
@@ -284,6 +389,10 @@ void MpvPlayer::UpdateState(const mpv_event_property& property) {
         state_.atEnd = FlagValue(property);
     } else if (std::strcmp(name, "sub-delay") == 0) {
         state_.subtitleDelay = DoubleValue(property).value_or(0.0);
+    } else if (std::strcmp(name, "ab-loop-a") == 0) {
+        state_.loopStart = DoubleValue(property);
+    } else if (std::strcmp(name, "ab-loop-b") == 0) {
+        state_.loopEnd = DoubleValue(property);
     } else if (std::strcmp(name, "track-list") == 0) {
         if (property.format == MPV_FORMAT_NODE) {
             UpdateTracks(*static_cast<const mpv_node*>(property.data));
@@ -291,6 +400,25 @@ void MpvPlayer::UpdateState(const mpv_event_property& property) {
             state_.tracks.clear();
         }
     }
+}
+
+void MpvPlayer::ReportVideoSizeIfPending() {
+    if (!videoSizePending_) {
+        return;
+    }
+    int64_t width = 0;
+    int64_t height = 0;
+    if (mpv_get_property(mpv_, "dwidth", MPV_FORMAT_INT64, &width) < 0 ||
+        mpv_get_property(mpv_, "dheight", MPV_FORMAT_INT64, &height) < 0) {
+        return;  // Nothing to show, as with an audio file.
+    }
+    // The size ignores rotation stored in the file, which mpv applies when drawing.
+    int64_t rotation = 0;
+    if (mpv_get_property(mpv_, "video-params/rotate", MPV_FORMAT_INT64, &rotation) >= 0 && rotation % 180 != 0) {
+        std::swap(width, height);
+    }
+    videoSizePending_ = false;
+    callbacks_.videoReady(static_cast<int>(width), static_cast<int>(height));
 }
 
 void MpvPlayer::ProcessEvents() {
@@ -303,6 +431,8 @@ void MpvPlayer::ProcessEvents() {
         if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
             UpdateState(*static_cast<const mpv_event_property*>(event->data));
             stateChanged = true;
+        } else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART) {
+            ReportVideoSizeIfPending();
         } else if (event->event_id == MPV_EVENT_COMMAND_REPLY) {
             if (event->reply_userdata == kAddSubtitleReply && event->error < 0) {
                 callbacks_.subtitleLoadFailed();

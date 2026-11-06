@@ -57,11 +57,22 @@ private:
     void SaveCurrentSettings();
     void LayoutChildren();
     void ShowControls();
-    void SetControlsVisible(bool visible);
-    void UpdateSubtitlePosition();
     void CycleSubtitle();
     void CycleAudio();
     void AdjustSubtitleDelay(double seconds);
+    void ChangeSpeed(double delta);
+    void SetSpeed(double speed);
+    void ToggleLoop();
+    void StepFrame(bool forward);
+    void SetAspect(AspectMode aspect);
+    void SetRotation(int degrees);
+    void AdjustVideo(VideoAdjustment adjustment, int delta);
+    void ResetVideo();
+    void AdjustAudioDelay(double seconds);
+    void ResetAudioDelay();
+    void SetVolumeFromPointer(int clientX);
+    void ApplyDefaultWindowSize();
+    void FitWindowToVideo(int videoWidth, int videoHeight);
     void SeekToPointer(int clientX, bool isFinal);
     void ToggleFullscreen();
     void SetFullscreen(bool fullscreen);
@@ -78,6 +89,7 @@ private:
 
     bool restoringPosition_ = false;
     bool startMaximized_ = false;
+    bool centerOnFirstFit_ = false;
 
     bool fullscreen_ = false;
     WINDOWPLACEMENT restorePlacement_{sizeof(WINDOWPLACEMENT)};
@@ -88,12 +100,12 @@ private:
     ControlBar::Part hoveredPart_ = ControlBar::Part::None;
     int wheelRemainder_ = 0;
 
-    bool controlsVisible_ = false;
-    int subtitlePosition_ = 100;
     bool menuOpen_ = false;
     bool announceSubtitleDelay_ = false;
+    bool announceLoop_ = false;
 
-    bool draggingSeek_ = false;
+    enum class Drag { None, Seek, Volume };
+    Drag drag_ = Drag::None;
     int lastDragX_ = 0;
     std::optional<double> seekPreview_;
     ULONGLONG seekPreviewExpiry_ = 0;

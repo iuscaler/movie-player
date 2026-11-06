@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <array>
 #include <optional>
 
 #include "MpvPlayer.h"
@@ -10,8 +11,11 @@
 struct Settings {
     double volume = 100.0;
     SubtitleEncoding subtitleEncoding = SubtitleEncoding::Korean;
-    std::optional<RECT> windowPosition;  // The window's normal, non-maximized rectangle.
+    // The window's normal, non-maximized rectangle. Opening a video keeps its
+    // position but replaces its size with one that fits the video.
+    std::optional<RECT> windowPosition;
     bool windowMaximized = false;
+    std::array<int, kVideoAdjustmentCount> videoAdjustments{};
 };
 
 // Missing or invalid values fall back to the defaults above.

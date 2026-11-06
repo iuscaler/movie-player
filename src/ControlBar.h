@@ -22,7 +22,10 @@
 // its own. All coordinates passed in are client-area pixels.
 class ControlBar {
 public:
-    enum class Part { None, Background, PlayPause, SeekTrack };
+    enum class Part { None, Background, PlayPause, SeekTrack, VolumeTrack, Fullscreen };
+
+    // The main window passes this timer on to HandleFadeTimer().
+    static constexpr UINT_PTR kFadeTimerId = 2;
 
     // Throws std::runtime_error if the graphics objects can't be created.
     explicit ControlBar(HWND window);
@@ -36,13 +39,15 @@ public:
     // While set, the bar shows this position instead of the playback position.
     void SetSeekPreview(std::optional<double> position);
     void SetHoveredPart(Part part);
+    void SetFullscreenState(bool fullscreen);
+    void HandleFadeTimer();
 
     // Returns Part::None while the bar is hidden.
     Part HitTest(POINT point) const;
     // Where clientX falls along the seek track, from 0 to 1.
     double SeekFractionAt(int clientX) const;
-    // How far up from the bottom of the window the controls reach, in pixels.
-    int ControlsHeight() const;
+    // The volume that clientX falls on along the volume slider.
+    double VolumeAt(int clientX) const;
 
 private:
     struct Layout {
@@ -52,9 +57,13 @@ private:
         float trackLeft = 0;
         float trackRight = 0;
         D2D1_RECT_F time{};
-        D2D1_RECT_F volume{};
+        float volumeTrackLeft = 0;
+        float volumeTrackRight = 0;
+        D2D1_RECT_F volumeText{};
+        D2D1_RECT_F fullscreen{};
         bool showTime = false;
         bool showVolume = false;
+        bool showFullscreen = false;
     };
 
     // Everything a frame depends on, so identical frames can be skipped.
@@ -62,7 +71,11 @@ private:
         std::wstring time;
         std::wstring volume;
         int fillPixels = 0;
+        int volumePixels = 0;
+        int loopStartPixels = -1;  // -1 when not set.
+        int loopEndPixels = -1;
         bool paused = false;
+        bool fullscreen = false;
         Part hovered = Part::None;
         auto operator<=>(const Frame&) const = default;
     };
@@ -73,7 +86,12 @@ private:
     void UpdateComposition();
     void Render();
     bool DrawFrame(const Layout& layout, const Frame& frame);
-    void DrawIcon(const Layout& layout, const Frame& frame);
+    void DrawPlayPauseIcon(const Layout& layout, const Frame& frame);
+    void DrawFullscreenIcon(const Layout& layout, const Frame& frame);
+    void DrawSeekTrack(const Layout& layout, const Frame& frame);
+    void DrawVolume(const Layout& layout, const Frame& frame);
+    void StartFade(float target);
+    float CurrentOpacity() const;
 
     Layout ComputeLayout() const;
     Frame ComputeFrame(const Layout& layout) const;
@@ -93,6 +111,7 @@ private:
     Microsoft::WRL::ComPtr<IDCompositionDevice> compositionDevice_;
     Microsoft::WRL::ComPtr<IDCompositionTarget> compositionTarget_;
     Microsoft::WRL::ComPtr<IDCompositionVisual> visual_;
+    Microsoft::WRL::ComPtr<IDCompositionEffectGroup> effect_;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
 
     int clientWidth_ = 0;
@@ -100,6 +119,11 @@ private:
     int surfaceHeight_ = 0;
     UINT dpi_ = 96;
     bool visible_ = false;
+    bool fadingOut_ = false;
+    bool fullscreen_ = false;
+    float fadeFrom_ = 0.0f;
+    float fadeTo_ = 0.0f;
+    ULONGLONG fadeStart_ = 0;
 
     PlaybackState playback_;
     std::optional<double> seekPreview_;

@@ -26,6 +26,14 @@ constexpr int kAppIconId = 1;
 constexpr int kSeekSeconds = 5;
 constexpr int kVolumeStep = 5;
 constexpr double kSubtitleDelayStep = 0.1;
+constexpr double kAudioDelayStep = 0.1;
+constexpr double kSpeedStep = 0.1;
+constexpr int kVideoAdjustStep = 2;
+constexpr int kDefaultWidth = 1280;   // Device-independent pixels, at 96 DPI.
+constexpr int kDefaultHeight = 720;
+constexpr int kMaxScreenPercent = 90;
+// Device-independent pixels. Smaller videos are enlarged so the controls stay usable.
+constexpr int kMinVideoWidth = 320;
 constexpr UINT_PTR kIdleTimer = 1;
 constexpr UINT kIdleDelayMs = 2000;
 
@@ -66,6 +74,7 @@ POINT PointFromLParam(LPARAM lParam) {
 MainWindow::MainWindow(HINSTANCE instance, const Settings& settings) : subtitleTempDirectory_(SubtitleTempDirectory()) {
     playback_.volume = settings.volume;
     playback_.subtitleEncoding = settings.subtitleEncoding;
+    playback_.adjustments = settings.videoAdjustments;
 
     RegisterWindowClass(instance, kClassName, &MainWindow::WindowProc, CS_DBLCLKS);
     RegisterWindowClass(instance, kVideoWindowClass, &DefWindowProcW, 0);
@@ -108,7 +117,9 @@ MainWindow::MainWindow(HINSTANCE instance, const Settings& settings) : subtitleT
     };
     callbacks.subtitleLoadFailed = [this] { player_->ShowMessage(L"자막 파일을 열 수 없습니다"); };
     callbacks.stateChanged = [this](const PlaybackState& state) { HandleStateChanged(state); };
-    player_ = std::make_unique<MpvPlayer>(videoWindow_, std::move(callbacks), settings.volume, settings.subtitleEncoding);
+    callbacks.videoReady = [this](int width, int height) { FitWindowToVideo(width, height); };
+    player_ = std::make_unique<MpvPlayer>(videoWindow_, std::move(callbacks), settings.volume, settings.subtitleEncoding,
+                                          settings.videoAdjustments);
 }
 
 void MainWindow::Show(int showCommand) {
@@ -150,8 +161,73 @@ void MainWindow::AddSubtitle(const std::wstring& path) {
     player_->AddSubtitleFile(files.front().wstring(), true);
 }
 
+void MainWindow::ApplyDefaultWindowSize() {
+    MONITORINFO monitor{sizeof(MONITORINFO)};
+    if (!GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        return;
+    }
+    const RECT& work = monitor.rcWork;
+    const int dpi = static_cast<int>(GetDpiForWindow(window_));
+    int width = MulDiv(kDefaultWidth, dpi, 96);
+    int height = MulDiv(kDefaultHeight, dpi, 96);
+    // Shrink to fit small screens, keeping the shape.
+    const int maxWidth = (work.right - work.left) * kMaxScreenPercent / 100;
+    const int maxHeight = (work.bottom - work.top) * kMaxScreenPercent / 100;
+    if (width > maxWidth) {
+        height = MulDiv(height, maxWidth, width);
+        width = maxWidth;
+    }
+    if (height > maxHeight) {
+        width = MulDiv(width, maxHeight, height);
+        height = maxHeight;
+    }
+    SetWindowPos(window_, nullptr, work.left + (work.right - work.left - width) / 2, work.top + (work.bottom - work.top - height) / 2,
+                 width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void MainWindow::FitWindowToVideo(int videoWidth, int videoHeight) {
+    const bool center = std::exchange(centerOnFirstFit_, false);
+    // The user's chosen fullscreen or maximized state takes priority.
+    if (fullscreen_ || IsZoomed(window_) || IsIconic(window_) || videoWidth <= 0 || videoHeight <= 0) {
+        return;
+    }
+    MONITORINFO monitor{sizeof(MONITORINFO)};
+    if (!GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        return;
+    }
+    const RECT& work = monitor.rcWork;
+    const UINT dpi = GetDpiForWindow(window_);
+
+    RECT frame{};
+    AdjustWindowRectExForDpi(&frame, static_cast<DWORD>(GetWindowLongPtrW(window_, GWL_STYLE)), FALSE,
+                             static_cast<DWORD>(GetWindowLongPtrW(window_, GWL_EXSTYLE)), dpi);
+    const int frameWidth = frame.right - frame.left;
+    const int frameHeight = frame.bottom - frame.top;
+
+    // One video pixel to one screen pixel, unless that's too small or won't fit the monitor.
+    double scale = 1.0;
+    const int minWidth = MulDiv(kMinVideoWidth, static_cast<int>(dpi), 96);
+    if (videoWidth < minWidth) {
+        scale = static_cast<double>(minWidth) / videoWidth;
+    }
+    scale = std::min({scale, static_cast<double>(work.right - work.left - frameWidth) / videoWidth,
+                      static_cast<double>(work.bottom - work.top - frameHeight) / videoHeight});
+    const int width = static_cast<int>(std::lround(videoWidth * scale)) + frameWidth;
+    const int height = static_cast<int>(std::lround(videoHeight * scale)) + frameHeight;
+
+    RECT current{};
+    GetWindowRect(window_, &current);
+    const int x = center ? work.left + (work.right - work.left - width) / 2
+                         : std::clamp(static_cast<int>(current.left), static_cast<int>(work.left), static_cast<int>(work.right) - width);
+    const int y = center ? work.top + (work.bottom - work.top - height) / 2
+                         : std::clamp(static_cast<int>(current.top), static_cast<int>(work.top), static_cast<int>(work.bottom) - height);
+    SetWindowPos(window_, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 void MainWindow::RestoreWindowPosition(const Settings& settings) {
     if (!settings.windowPosition) {
+        ApplyDefaultWindowSize();
+        centerOnFirstFit_ = true;
         return;
     }
     WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};
@@ -176,6 +252,7 @@ void MainWindow::SaveCurrentSettings() {
     settings.volume = playback_.volume;
     settings.subtitleEncoding = playback_.subtitleEncoding;
     settings.windowPosition = placement.rcNormalPosition;
+    settings.videoAdjustments = playback_.adjustments;
     settings.windowMaximized = placement.showCmd == SW_SHOWMAXIMIZED ||
                                (placement.showCmd == SW_SHOWMINIMIZED && (placement.flags & WPF_RESTORETOMAXIMIZED) != 0);
     SaveSettings(settings);
@@ -281,6 +358,8 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (wParam == kIdleTimer) {
             KillTimer(window_, kIdleTimer);
             HandleIdleTimeout();
+        } else if (wParam == ControlBar::kFadeTimerId && controlBar_) {
+            controlBar_->HandleFadeTimer();
         }
         return 0;
     case WM_SETCURSOR:
@@ -323,36 +402,11 @@ void MainWindow::LayoutChildren() {
     if (controlBar_) {
         controlBar_->Resize(client.right, client.bottom, GetDpiForWindow(window_));
     }
-    UpdateSubtitlePosition();
 }
 
 void MainWindow::ShowControls() {
-    SetControlsVisible(true);
+    controlBar_->SetVisible(true);
     SetTimer(window_, kIdleTimer, kIdleDelayMs, nullptr);
-}
-
-void MainWindow::SetControlsVisible(bool visible) {
-    controlsVisible_ = visible;
-    controlBar_->SetVisible(visible);
-    UpdateSubtitlePosition();
-}
-
-void MainWindow::UpdateSubtitlePosition() {
-    if (!player_) {
-        return;
-    }
-    // While the controls show, lift subtitles so the bar doesn't cover them.
-    int position = 100;
-    RECT client{};
-    GetClientRect(window_, &client);
-    if (controlsVisible_ && client.bottom > 0) {
-        const int covered = 100 * controlBar_->ControlsHeight() / client.bottom;
-        position = std::max(100 - covered, 50);
-    }
-    if (position != subtitlePosition_) {
-        subtitlePosition_ = position;
-        player_->SetSubtitlePosition(position);
-    }
 }
 
 void MainWindow::HandleKeyDown(WPARAM key, bool isRepeat) {
@@ -409,9 +463,134 @@ void MainWindow::HandleKeyDown(WPARAM key, bool isRepeat) {
             player_->ResetSubtitleDelay();
         }
         break;
+    case 'C':
+        ChangeSpeed(kSpeedStep);
+        break;
+    case 'X':
+        ChangeSpeed(-kSpeedStep);
+        break;
+    case 'Z':
+        if (!isRepeat) {
+            SetSpeed(1.0);
+        }
+        break;
+    case 'L':
+        if (!isRepeat) {
+            ToggleLoop();
+        }
+        break;
+    case 'F':
+        StepFrame(true);
+        break;
+    case 'D':
+        StepFrame(false);
+        break;
+    case 'Q':
+        AdjustVideo(VideoAdjustment::Brightness, -kVideoAdjustStep);
+        break;
+    case 'W':
+        AdjustVideo(VideoAdjustment::Brightness, kVideoAdjustStep);
+        break;
+    case 'E':
+        AdjustVideo(VideoAdjustment::Contrast, -kVideoAdjustStep);
+        break;
+    case 'R':
+        AdjustVideo(VideoAdjustment::Contrast, kVideoAdjustStep);
+        break;
+    case 'T':
+        AdjustVideo(VideoAdjustment::Saturation, -kVideoAdjustStep);
+        break;
+    case 'Y':
+        AdjustVideo(VideoAdjustment::Saturation, kVideoAdjustStep);
+        break;
+    case 'U':
+        AdjustVideo(VideoAdjustment::Hue, -kVideoAdjustStep);
+        break;
+    case 'I':
+        AdjustVideo(VideoAdjustment::Hue, kVideoAdjustStep);
+        break;
+    case 'O':
+        AdjustVideo(VideoAdjustment::Gamma, -kVideoAdjustStep);
+        break;
+    case 'P':
+        AdjustVideo(VideoAdjustment::Gamma, kVideoAdjustStep);
+        break;
+    case VK_BACK:
+        if (!isRepeat) {
+            ResetVideo();
+        }
+        break;
+    case VK_OEM_4:  // The '[' key.
+        AdjustAudioDelay(-kAudioDelayStep);
+        break;
+    case VK_OEM_6:  // The ']' key.
+        AdjustAudioDelay(kAudioDelayStep);
+        break;
+    case VK_OEM_5:  // The backslash key.
+        if (!isRepeat) {
+            ResetAudioDelay();
+        }
+        break;
     default:
         break;
     }
+}
+
+void MainWindow::ChangeSpeed(double delta) {
+    wchar_t message[32];
+    swprintf_s(message, L"배속 %g배", player_->ChangeSpeed(delta));
+    player_->ShowMessage(message);
+}
+
+void MainWindow::SetSpeed(double speed) {
+    player_->SetSpeed(speed);
+    wchar_t message[32];
+    swprintf_s(message, L"배속 %g배", speed);
+    player_->ShowMessage(message);
+}
+
+void MainWindow::ToggleLoop() {
+    announceLoop_ = true;
+    player_->ToggleLoop();
+    ShowControls();
+}
+
+void MainWindow::StepFrame(bool forward) {
+    player_->StepFrame(forward);
+    ShowControls();
+}
+
+void MainWindow::SetAspect(AspectMode aspect) {
+    player_->SetAspect(aspect);
+    player_->ShowMessage(std::wstring(L"화면 비율: ") + AspectLabel(aspect));
+}
+
+void MainWindow::SetRotation(int degrees) {
+    player_->SetRotation(degrees);
+    player_->ShowMessage(degrees == 0 ? std::wstring(L"회전 안 함") : L"회전 " + std::to_wstring(degrees) + L"도");
+}
+
+void MainWindow::AdjustVideo(VideoAdjustment adjustment, int delta) {
+    const int value = player_->ChangeVideoAdjustment(adjustment, delta);
+    wchar_t message[32];
+    swprintf_s(message, L"%s %+d", VideoAdjustmentLabel(adjustment), value);
+    player_->ShowMessage(message);
+}
+
+void MainWindow::ResetVideo() {
+    player_->ResetVideoAdjustments();
+    player_->ShowMessage(L"영상 조정 초기화");
+}
+
+void MainWindow::AdjustAudioDelay(double seconds) {
+    wchar_t message[32];
+    swprintf_s(message, L"음성 싱크 %+.1f초", player_->ChangeAudioDelay(seconds));
+    player_->ShowMessage(message);
+}
+
+void MainWindow::ResetAudioDelay() {
+    player_->ResetAudioDelay();
+    player_->ShowMessage(L"음성 싱크 +0.0초");
 }
 
 void MainWindow::CycleSubtitle() {
@@ -519,6 +698,37 @@ void MainWindow::HandleContextMenu(POINT screenPoint) {
         UnregisterFileAssociation();
         player_->ShowMessage(L"연결 프로그램 등록을 해제했습니다");
         break;
+    case MenuChoice::Action::SetSpeed:
+        SetSpeed(choice.speed);
+        break;
+    case MenuChoice::Action::ToggleLoop:
+        ToggleLoop();
+        break;
+    case MenuChoice::Action::ClearLoop:
+        announceLoop_ = true;
+        player_->ClearLoop();
+        break;
+    case MenuChoice::Action::StepForward:
+        StepFrame(true);
+        break;
+    case MenuChoice::Action::StepBackward:
+        StepFrame(false);
+        break;
+    case MenuChoice::Action::SetAspect:
+        SetAspect(choice.aspect);
+        break;
+    case MenuChoice::Action::SetRotation:
+        SetRotation(choice.rotation);
+        break;
+    case MenuChoice::Action::AdjustVideo:
+        AdjustVideo(choice.adjustment, choice.adjustmentDirection * kVideoAdjustStep);
+        break;
+    case MenuChoice::Action::ResetVideo:
+        ResetVideo();
+        break;
+    case MenuChoice::Action::ResetAudioDelay:
+        ResetAudioDelay();
+        break;
     case MenuChoice::Action::None:
         break;
     }
@@ -536,9 +746,13 @@ void MainWindow::HandleMouseWheel(int delta) {
 }
 
 void MainWindow::HandleMouseMove(POINT point) {
-    if (draggingSeek_) {
+    if (drag_ == Drag::Seek) {
         lastDragX_ = point.x;
         SeekToPointer(point.x, false);
+        return;
+    }
+    if (drag_ == Drag::Volume) {
+        SetVolumeFromPointer(point.x);
         return;
     }
 
@@ -565,9 +779,9 @@ void MainWindow::HandleMouseLeave() {
     trackingMouseLeave_ = false;
     hoveredPart_ = ControlBar::Part::None;
     controlBar_->SetHoveredPart(hoveredPart_);
-    if (!draggingSeek_ && !menuOpen_ && !playback_.paused) {
+    if (drag_ == Drag::None && !menuOpen_ && !playback_.paused) {
         KillTimer(window_, kIdleTimer);
-        SetControlsVisible(false);
+        controlBar_->SetVisible(false);
     }
     // A real return to the window is always from elsewhere, so this keeps spurious
     // move messages from counting as movement while the pointer is outside.
@@ -581,10 +795,18 @@ void MainWindow::HandleLeftButtonDown(POINT point) {
         ShowControls();
         break;
     case ControlBar::Part::SeekTrack:
-        draggingSeek_ = true;
+        drag_ = Drag::Seek;
         lastDragX_ = point.x;
         SetCapture(window_);
         SeekToPointer(point.x, false);
+        break;
+    case ControlBar::Part::VolumeTrack:
+        drag_ = Drag::Volume;
+        SetCapture(window_);
+        SetVolumeFromPointer(point.x);
+        break;
+    case ControlBar::Part::Fullscreen:
+        ToggleFullscreen();
         break;
     default:
         break;
@@ -592,21 +814,34 @@ void MainWindow::HandleLeftButtonDown(POINT point) {
 }
 
 void MainWindow::HandleLeftButtonUp(POINT point) {
-    if (!draggingSeek_) {
+    if (drag_ == Drag::None) {
         return;
     }
-    draggingSeek_ = false;  // First, so losing the capture below isn't treated as a cancelled drag.
-    SeekToPointer(point.x, true);
+    const Drag finished = drag_;
+    drag_ = Drag::None;  // First, so losing the capture below isn't treated as a cancelled drag.
+    if (finished == Drag::Seek) {
+        SeekToPointer(point.x, true);
+    } else {
+        SetVolumeFromPointer(point.x);
+    }
     ReleaseCapture();
     ShowControls();
 }
 
 void MainWindow::HandleCaptureLost() {
-    if (draggingSeek_) {
-        draggingSeek_ = false;
-        SeekToPointer(lastDragX_, true);
-        ShowControls();
+    if (drag_ == Drag::None) {
+        return;
     }
+    const Drag finished = drag_;
+    drag_ = Drag::None;
+    if (finished == Drag::Seek) {
+        SeekToPointer(lastDragX_, true);
+    }
+    ShowControls();
+}
+
+void MainWindow::SetVolumeFromPointer(int clientX) {
+    player_->SetVolume(std::round(controlBar_->VolumeAt(clientX)));
 }
 
 void MainWindow::SeekToPointer(int clientX, bool isFinal) {
@@ -622,11 +857,11 @@ void MainWindow::SeekToPointer(int clientX, bool isFinal) {
 }
 
 void MainWindow::HandleIdleTimeout() {
-    if (draggingSeek_ || menuOpen_ || hoveredPart_ != ControlBar::Part::None) {
+    if (drag_ != Drag::None || menuOpen_ || hoveredPart_ != ControlBar::Part::None) {
         return;  // Leaving the bar, finishing the drag or closing the menu starts the timer again.
     }
     if (!playback_.paused) {
-        SetControlsVisible(false);
+        controlBar_->SetVisible(false);
     }
     if (fullscreen_) {
         SetCursorHidden(true);
@@ -651,6 +886,7 @@ void MainWindow::HandleDroppedFiles(HDROP drop) {
 
 void MainWindow::HandleStateChanged(const PlaybackState& state) {
     const bool delayChanged = state.subtitleDelay != playback_.subtitleDelay;
+    const bool loopChanged = state.loopStart != playback_.loopStart || state.loopEnd != playback_.loopEnd;
     playback_ = state;
     UpdateTitle(state);
 
@@ -661,7 +897,22 @@ void MainWindow::HandleStateChanged(const PlaybackState& state) {
         player_->ShowMessage(message);
     }
 
-    if (seekPreview_ && !draggingSeek_) {
+    // Seeking back before marking the end leaves the two the wrong way round, and
+    // mpv wouldn't loop that. Swap them; the announcement waits for the corrected state.
+    if (state.loopStart && state.loopEnd && *state.loopEnd < *state.loopStart) {
+        player_->SetLoop(*state.loopEnd, *state.loopStart);
+    } else if (loopChanged && announceLoop_) {
+        announceLoop_ = false;
+        if (state.loopStart && state.loopEnd) {
+            player_->ShowMessage(L"구간 반복 " + FormatTime(*state.loopStart) + L" ~ " + FormatTime(*state.loopEnd));
+        } else if (state.loopStart) {
+            player_->ShowMessage(L"구간 시작 " + FormatTime(*state.loopStart));
+        } else {
+            player_->ShowMessage(L"구간 반복 해제");
+        }
+    }
+
+    if (seekPreview_ && drag_ != Drag::Seek) {
         const bool arrived = state.position && std::abs(*state.position - *seekPreview_) < kSeekPreviewToleranceSeconds;
         if (arrived || GetTickCount64() >= seekPreviewExpiry_) {
             seekPreview_.reset();
@@ -699,6 +950,7 @@ void MainWindow::SetFullscreen(bool fullscreen) {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     }
     fullscreen_ = fullscreen;
+    controlBar_->SetFullscreenState(fullscreen);
     ShowControls();
 }
 
