@@ -25,10 +25,19 @@ std::wstring PickFile(HWND owner, const wchar_t* filter, const wchar_t* title) {
 }  // namespace
 
 std::wstring PickVideoFile(HWND owner) {
-    return PickFile(owner,
-                    L"동영상 파일\0*.mp4;*.mkv;*.avi;*.mov;*.wmv;*.webm;*.ts;*.m4v\0"
-                    L"모든 파일\0*.*\0",
-                    L"재생할 동영상 선택");
+    std::wstring filter = L"동영상 파일";
+    filter.push_back(L'\0');
+    for (const wchar_t* extension : kVideoExtensions) {
+        filter += L"*";
+        filter += extension;
+        filter += L";";
+    }
+    filter.push_back(L'\0');
+    filter += L"모든 파일";
+    filter.push_back(L'\0');
+    filter += L"*.*";
+    filter.push_back(L'\0');
+    return PickFile(owner, filter.c_str(), L"재생할 동영상 선택");
 }
 
 std::wstring PickSubtitleFile(HWND owner) {

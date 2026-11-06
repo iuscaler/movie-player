@@ -11,6 +11,8 @@ constexpr UINT kSubtitleOff = 3;
 constexpr UINT kResetSubtitleDelay = 4;
 constexpr UINT kEncodingKorean = 5;
 constexpr UINT kEncodingAuto = 6;
+constexpr UINT kRegisterAssociation = 7;
+constexpr UINT kUnregisterAssociation = 8;
 constexpr UINT kSubtitleTrackBase = 1000;
 constexpr UINT kAudioTrackBase = 20000;
 
@@ -88,6 +90,10 @@ MenuChoice ChoiceFromCommand(UINT command) {
     } else if (command == kEncodingKorean || command == kEncodingAuto) {
         choice.action = MenuChoice::Action::SetSubtitleEncoding;
         choice.encoding = command == kEncodingKorean ? SubtitleEncoding::Korean : SubtitleEncoding::Auto;
+    } else if (command == kRegisterAssociation) {
+        choice.action = MenuChoice::Action::RegisterFileAssociation;
+    } else if (command == kUnregisterAssociation) {
+        choice.action = MenuChoice::Action::UnregisterFileAssociation;
     }
     return choice;
 }
@@ -113,7 +119,7 @@ std::wstring TrackLabel(const MediaTrack& track) {
     return label;
 }
 
-MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& state) {
+MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& state, bool fileAssociationRegistered) {
     const bool fileOpen = !state.fileName.empty();
     HMENU menu = CreatePopupMenu();
     AddItem(menu, kOpenVideo, L"파일 열기...");
@@ -128,6 +134,12 @@ MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& s
         return false;
     }();
     AppendMenuW(menu, MF_POPUP | (hasAudio ? MF_ENABLED : MF_GRAYED), reinterpret_cast<UINT_PTR>(BuildAudioMenu(state)), L"오디오");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (fileAssociationRegistered) {
+        AddItem(menu, kUnregisterAssociation, L"탐색기 연결 프로그램에서 해제");
+    } else {
+        AddItem(menu, kRegisterAssociation, L"탐색기 연결 프로그램에 등록...");
+    }
 
     // A popup menu only closes on an outside click if its owner is in the foreground.
     SetForegroundWindow(owner);

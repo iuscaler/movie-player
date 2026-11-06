@@ -18,6 +18,8 @@ struct MenuChoice {
         SelectAudio,
         ResetSubtitleDelay,
         SetSubtitleEncoding,
+        RegisterFileAssociation,
+        UnregisterFileAssociation,
     };
     Action action = Action::None;
     std::optional<int64_t> trackId;
@@ -25,7 +27,7 @@ struct MenuChoice {
 };
 
 // Shows the menu at a screen position and blocks until it closes. Playback keeps running.
-MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& state);
+MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& state, bool fileAssociationRegistered);
 
 // A short human-readable name for a track, for menus and on-screen messages.
 std::wstring TrackLabel(const MediaTrack& track);

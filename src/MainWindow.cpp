@@ -6,19 +6,22 @@
 #include <cmath>
 #include <cwchar>
 #include <stdexcept>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include "ContextMenu.h"
+#include "FileAssociation.h"
 #include "FileDialogs.h"
+#include "SmiSubtitles.h"
 #include "TimeFormat.h"
 
 namespace {
 
-constexpr wchar_t kMainWindowClass[] = L"MoviePlayer.MainWindow";
 constexpr wchar_t kVideoWindowClass[] = L"MoviePlayer.VideoWindow";
 constexpr wchar_t kAppTitle[] = L"Movie Player";
 constexpr UINT WM_MPV_WAKEUP = WM_APP + 1;
+constexpr int kAppIconId = 1;
 
 constexpr int kSeekSeconds = 5;
 constexpr int kVolumeStep = 5;
@@ -38,6 +41,7 @@ void RegisterWindowClass(HINSTANCE instance, const wchar_t* name, WNDPROC proc, 
     windowClass.style = style;
     windowClass.lpfnWndProc = proc;
     windowClass.hInstance = instance;
+    windowClass.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(kAppIconId));
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     windowClass.lpszClassName = name;
@@ -46,18 +50,28 @@ void RegisterWindowClass(HINSTANCE instance, const wchar_t* name, WNDPROC proc, 
     }
 }
 
+std::filesystem::path SubtitleTempDirectory() {
+    wchar_t temp[MAX_PATH + 1];
+    const DWORD length = GetTempPathW(MAX_PATH + 1, temp);
+    const std::filesystem::path root = length > 0 ? std::filesystem::path(temp) : std::filesystem::path();
+    return root / L"MoviePlayer" / std::to_wstring(GetCurrentProcessId());
+}
+
 POINT PointFromLParam(LPARAM lParam) {
     return {static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
 }
 
 }  // namespace
 
-MainWindow::MainWindow(HINSTANCE instance) {
-    RegisterWindowClass(instance, kMainWindowClass, &MainWindow::WindowProc, CS_DBLCLKS);
+MainWindow::MainWindow(HINSTANCE instance, const Settings& settings) : subtitleTempDirectory_(SubtitleTempDirectory()) {
+    playback_.volume = settings.volume;
+    playback_.subtitleEncoding = settings.subtitleEncoding;
+
+    RegisterWindowClass(instance, kClassName, &MainWindow::WindowProc, CS_DBLCLKS);
     RegisterWindowClass(instance, kVideoWindowClass, &DefWindowProcW, 0);
 
     window_ = CreateWindowExW(
-        WS_EX_ACCEPTFILES, kMainWindowClass, kAppTitle, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+        WS_EX_ACCEPTFILES, kClassName, kAppTitle, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720,
         nullptr, nullptr, instance, this);
     if (!window_) {
@@ -83,6 +97,7 @@ MainWindow::MainWindow(HINSTANCE instance) {
     EnableWindow(videoWindow_, FALSE);
 
     controlBar_ = std::make_unique<ControlBar>(window_);
+    RestoreWindowPosition(settings);
     LayoutChildren();
 
     MpvPlayer::Callbacks callbacks;
@@ -93,17 +108,107 @@ MainWindow::MainWindow(HINSTANCE instance) {
     };
     callbacks.subtitleLoadFailed = [this] { player_->ShowMessage(L"자막 파일을 열 수 없습니다"); };
     callbacks.stateChanged = [this](const PlaybackState& state) { HandleStateChanged(state); };
-    player_ = std::make_unique<MpvPlayer>(videoWindow_, std::move(callbacks));
+    player_ = std::make_unique<MpvPlayer>(videoWindow_, std::move(callbacks), settings.volume, settings.subtitleEncoding);
 }
 
 void MainWindow::Show(int showCommand) {
-    ShowWindow(window_, showCommand);
+    const bool minimized = showCommand == SW_SHOWMINIMIZED || showCommand == SW_MINIMIZE || showCommand == SW_SHOWMINNOACTIVE;
+    ShowWindow(window_, startMaximized_ && !minimized ? SW_SHOWMAXIMIZED : showCommand);
     UpdateWindow(window_);
 }
 
 void MainWindow::Open(const std::wstring& path) {
-    player_->Open(path);
+    if (IsSubtitleFile(path)) {
+        AddSubtitle(path);
+    } else {
+        OpenVideo(path);
+    }
     ShowControls();
+}
+
+void MainWindow::OpenVideo(const std::wstring& path) {
+    // Language parts split out for the previous video aren't needed any more.
+    std::error_code error;
+    std::filesystem::remove_all(subtitleTempDirectory_, error);
+
+    std::vector<std::wstring> subtitles;
+    for (const std::filesystem::path& file : PrepareSmiFilesFor(path, subtitleTempDirectory_)) {
+        subtitles.push_back(file.wstring());
+    }
+    player_->Open(path, subtitles);
+}
+
+void MainWindow::AddSubtitle(const std::wstring& path) {
+    std::vector<std::filesystem::path> files{path};
+    if (IsSmiFile(path)) {
+        files = PrepareSmiFile(path, subtitleTempDirectory_);
+    }
+    // The preferred language comes first: add the others quietly, and switch to it last.
+    for (size_t i = files.size(); i-- > 1;) {
+        player_->AddSubtitleFile(files[i].wstring(), false);
+    }
+    player_->AddSubtitleFile(files.front().wstring(), true);
+}
+
+void MainWindow::RestoreWindowPosition(const Settings& settings) {
+    if (!settings.windowPosition) {
+        return;
+    }
+    WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};
+    placement.showCmd = SW_HIDE;
+    placement.rcNormalPosition = *settings.windowPosition;
+    // Windows moves a window back on screen if its saved monitor is gone. It also
+    // sends WM_DPICHANGED if the monitor differs, but the saved size is already right.
+    restoringPosition_ = true;
+    SetWindowPlacement(window_, &placement);
+    restoringPosition_ = false;
+    startMaximized_ = settings.windowMaximized;
+}
+
+void MainWindow::SaveCurrentSettings() {
+    WINDOWPLACEMENT placement{sizeof(WINDOWPLACEMENT)};
+    if (fullscreen_) {
+        placement = restorePlacement_;
+    } else if (!GetWindowPlacement(window_, &placement)) {
+        return;
+    }
+    Settings settings;
+    settings.volume = playback_.volume;
+    settings.subtitleEncoding = playback_.subtitleEncoding;
+    settings.windowPosition = placement.rcNormalPosition;
+    settings.windowMaximized = placement.showCmd == SW_SHOWMAXIMIZED ||
+                               (placement.showCmd == SW_SHOWMINIMIZED && (placement.flags & WPF_RESTORETOMAXIMIZED) != 0);
+    SaveSettings(settings);
+}
+
+void MainWindow::HandleCopyData(const COPYDATASTRUCT& data) {
+    if (data.dwData != kOpenPathMessageId) {
+        return;
+    }
+    if (IsIconic(window_)) {
+        ShowWindow(window_, SW_RESTORE);
+    }
+    SetForegroundWindow(window_);
+    const size_t length = data.cbData / sizeof(wchar_t);
+    if (data.lpData && length > 0) {
+        Open(std::wstring(static_cast<const wchar_t*>(data.lpData), length));
+    }
+}
+
+void MainWindow::HandleRegisterFileAssociation() {
+    if (!RegisterFileAssociation()) {
+        MessageBoxW(window_, L"연결 프로그램에 등록하지 못했습니다.", kAppTitle, MB_OK | MB_ICONERROR);
+        return;
+    }
+    const int answer = MessageBoxW(
+        window_,
+        L"\"연결 프로그램\" 목록에 등록했습니다.\n\n"
+        L"영상을 더블클릭해서 바로 열려면 Windows 기본 앱 설정에서 Movie Player를 직접 지정해야 합니다.\n\n"
+        L"지금 기본 앱 설정을 열까요?",
+        kAppTitle, MB_YESNO | MB_ICONINFORMATION);
+    if (answer == IDYES) {
+        OpenDefaultAppsSettings();
+    }
 }
 
 LRESULT CALLBACK MainWindow::WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -124,7 +229,14 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_SIZE:
         LayoutChildren();
         return 0;
+    case WM_COPYDATA:
+        HandleCopyData(*reinterpret_cast<const COPYDATASTRUCT*>(lParam));
+        return TRUE;
     case WM_DPICHANGED: {
+        if (restoringPosition_) {
+            LayoutChildren();
+            return 0;
+        }
         const auto* suggested = reinterpret_cast<const RECT*>(lParam);
         SetWindowPos(window_, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
                      suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -184,9 +296,14 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         HandleDroppedFiles(reinterpret_cast<HDROP>(wParam));
         return 0;
     case WM_CLOSE:
+        SaveCurrentSettings();
         // mpv renders into videoWindow_, so stop it before the window goes away.
         player_.reset();
         controlBar_.reset();
+        {
+            std::error_code error;
+            std::filesystem::remove_all(subtitleTempDirectory_, error);
+        }
         DestroyWindow(window_);
         return 0;
     case WM_DESTROY:
@@ -361,7 +478,7 @@ void MainWindow::HandleContextMenu(POINT screenPoint) {
     }
     menuOpen_ = true;
     SetCursorHidden(false);
-    const MenuChoice choice = ShowContextMenu(window_, screenPoint, playback_);
+    const MenuChoice choice = ShowContextMenu(window_, screenPoint, playback_, IsFileAssociationRegistered());
     menuOpen_ = false;
     ShowControls();
 
@@ -376,7 +493,7 @@ void MainWindow::HandleContextMenu(POINT screenPoint) {
     case MenuChoice::Action::OpenSubtitle: {
         const std::wstring path = PickSubtitleFile(window_);
         if (!path.empty()) {
-            player_->AddSubtitleFile(path);
+            AddSubtitle(path);
         }
         break;
     }
@@ -394,6 +511,13 @@ void MainWindow::HandleContextMenu(POINT screenPoint) {
         break;
     case MenuChoice::Action::SetSubtitleEncoding:
         player_->SetSubtitleEncoding(choice.encoding);
+        break;
+    case MenuChoice::Action::RegisterFileAssociation:
+        HandleRegisterFileAssociation();
+        break;
+    case MenuChoice::Action::UnregisterFileAssociation:
+        UnregisterFileAssociation();
+        player_->ShowMessage(L"연결 프로그램 등록을 해제했습니다");
         break;
     case MenuChoice::Action::None:
         break;
@@ -520,11 +644,7 @@ void MainWindow::HandleDroppedFiles(HDROP drop) {
     DragFinish(drop);
 
     if (!path.empty()) {
-        if (IsSubtitleFile(path)) {
-            player_->AddSubtitleFile(path);
-        } else {
-            Open(path);
-        }
+        Open(path);
         SetForegroundWindow(window_);
     }
 }

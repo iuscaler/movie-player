@@ -65,13 +65,14 @@ public:
     };
 
     // Renders into videoWindow. Throws std::runtime_error if mpv can't start.
-    MpvPlayer(HWND videoWindow, Callbacks callbacks);
+    MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, SubtitleEncoding subtitleEncoding);
     ~MpvPlayer();
 
     MpvPlayer(const MpvPlayer&) = delete;
     MpvPlayer& operator=(const MpvPlayer&) = delete;
 
-    void Open(const std::wstring& path);
+    // Subtitle files are offered in the given order, and mpv favors the first.
+    void Open(const std::wstring& path, const std::vector<std::wstring>& subtitleFiles);
     void TogglePause();
     void SeekBy(int seconds);
     // An exact seek lands on the requested time. Otherwise it lands on a nearby
@@ -79,7 +80,8 @@ public:
     void SeekTo(double seconds, bool exact);
     void ChangeVolume(int delta);
 
-    void AddSubtitleFile(const std::wstring& path);
+    // Adds a subtitle track to the current file, and optionally switches to it.
+    void AddSubtitleFile(const std::wstring& path, bool select);
     // An empty id turns subtitles off.
     void SelectSubtitle(std::optional<int64_t> trackId);
     void SelectAudio(int64_t trackId);

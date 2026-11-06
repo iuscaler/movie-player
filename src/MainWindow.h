@@ -4,25 +4,33 @@
 
 #include <shellapi.h>
 
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
 
 #include "ControlBar.h"
 #include "MpvPlayer.h"
+#include "Settings.h"
 
 // The top-level window. It takes all keyboard and mouse input and turns it into
 // player commands, and decides when the control bar is shown. mpv draws into a
 // dedicated child window; the control bar is composited above it.
 class MainWindow {
 public:
+    // How a second copy of the app finds this one and hands it a file: a
+    // WM_COPYDATA message with this id, holding a UTF-16 path that may be empty.
+    static constexpr wchar_t kClassName[] = L"MoviePlayer.MainWindow";
+    static constexpr ULONG_PTR kOpenPathMessageId = 0x4D505631;
+
     // Throws std::runtime_error if the window or the player can't be created.
-    explicit MainWindow(HINSTANCE instance);
+    MainWindow(HINSTANCE instance, const Settings& settings);
 
     MainWindow(const MainWindow&) = delete;
     MainWindow& operator=(const MainWindow&) = delete;
 
     void Show(int showCommand);
+    // Opens a video, or adds a subtitle to the current one, depending on the file type.
     void Open(const std::wstring& path);
 
 private:
@@ -39,8 +47,14 @@ private:
     void HandleIdleTimeout();
     void HandleDroppedFiles(HDROP drop);
     void HandleContextMenu(POINT screenPoint);
+    void HandleCopyData(const COPYDATASTRUCT& data);
+    void HandleRegisterFileAssociation();
     void HandleStateChanged(const PlaybackState& state);
 
+    void OpenVideo(const std::wstring& path);
+    void AddSubtitle(const std::wstring& path);
+    void RestoreWindowPosition(const Settings& settings);
+    void SaveCurrentSettings();
     void LayoutChildren();
     void ShowControls();
     void SetControlsVisible(bool visible);
@@ -59,6 +73,11 @@ private:
     std::unique_ptr<ControlBar> controlBar_;
     std::unique_ptr<MpvPlayer> player_;
     PlaybackState playback_;
+
+    std::filesystem::path subtitleTempDirectory_;
+
+    bool restoringPosition_ = false;
+    bool startMaximized_ = false;
 
     bool fullscreen_ = false;
     WINDOWPLACEMENT restorePlacement_{sizeof(WINDOWPLACEMENT)};

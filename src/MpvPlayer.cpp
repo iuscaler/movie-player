@@ -104,7 +104,10 @@ MediaTrack TrackFromNode(const mpv_node& node) {
 
 }  // namespace
 
-MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks) : callbacks_(std::move(callbacks)) {
+MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, SubtitleEncoding subtitleEncoding)
+    : callbacks_(std::move(callbacks)) {
+    state_.volume = volume;
+    state_.subtitleEncoding = subtitleEncoding;
     mpv_ = mpv_create();
     if (!mpv_) {
         throw std::runtime_error("mpv_create failed");
@@ -123,7 +126,11 @@ MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks) : callbacks_(std::mo
         // mpv's detection misreads CP949, the usual encoding of older Korean subtitles.
         // Unicode files are still recognized with this setting.
         Check(mpv_set_property_string(mpv_, "sub-codepage", EncodingOption(state_.subtitleEncoding)), "set sub-codepage");
+        Check(mpv_set_property(mpv_, "volume", MPV_FORMAT_DOUBLE, &state_.volume), "set volume");
         Check(mpv_initialize(mpv_), "mpv_initialize");
+
+        // The app finds SMI files itself, since they may need splitting by language.
+        Command({"change-list", "sub-auto-exts", "remove", "smi"});
 
         Check(mpv_observe_property(mpv_, 0, "filename", MPV_FORMAT_STRING), "observe filename");
         Check(mpv_observe_property(mpv_, 0, "time-pos", MPV_FORMAT_DOUBLE), "observe time-pos");
@@ -149,7 +156,23 @@ MpvPlayer::~MpvPlayer() {
     mpv_terminate_destroy(mpv_);
 }
 
-void MpvPlayer::Open(const std::wstring& path) {
+void MpvPlayer::Open(const std::wstring& path, const std::vector<std::wstring>& subtitleFiles) {
+    std::vector<std::string> utf8Files;
+    for (const std::wstring& file : subtitleFiles) {
+        utf8Files.push_back(ToUtf8(file));
+    }
+    std::vector<mpv_node> items(utf8Files.size());
+    for (size_t i = 0; i < utf8Files.size(); ++i) {
+        items[i].format = MPV_FORMAT_STRING;
+        items[i].u.string = utf8Files[i].data();
+    }
+    mpv_node_list list{static_cast<int>(items.size()), items.data(), nullptr};
+    mpv_node files{};
+    files.format = MPV_FORMAT_NODE_ARRAY;
+    files.u.list = &list;
+    // Replaces the list from the previous file. Requests run in order, so this applies to the load below.
+    mpv_set_property_async(mpv_, 0, "sub-files", MPV_FORMAT_NODE, &files);
+
     const std::string utf8Path = ToUtf8(path);
     // A sync adjustment belongs to the file it was made for.
     Command({"set", "sub-delay", "0"});
@@ -182,9 +205,9 @@ void MpvPlayer::ChangeVolume(int delta) {
     Command({"add", "volume", amount.c_str()});
 }
 
-void MpvPlayer::AddSubtitleFile(const std::wstring& path) {
+void MpvPlayer::AddSubtitleFile(const std::wstring& path, bool select) {
     const std::string utf8Path = ToUtf8(path);
-    Command({"sub-add", utf8Path.c_str(), "select"}, kAddSubtitleReply);
+    Command({"sub-add", utf8Path.c_str(), select ? "select" : "auto"}, kAddSubtitleReply);
 }
 
 void MpvPlayer::SelectSubtitle(std::optional<int64_t> trackId) {
