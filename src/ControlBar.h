@@ -41,6 +41,8 @@ public:
     Part HitTest(POINT point) const;
     // Where clientX falls along the seek track, from 0 to 1.
     double SeekFractionAt(int clientX) const;
+    // How far up from the bottom of the window the controls reach, in pixels.
+    int ControlsHeight() const;
 
 private:
     struct Layout {

@@ -38,10 +38,16 @@ private:
     void HandleCaptureLost();
     void HandleIdleTimeout();
     void HandleDroppedFiles(HDROP drop);
+    void HandleContextMenu(POINT screenPoint);
     void HandleStateChanged(const PlaybackState& state);
 
     void LayoutChildren();
     void ShowControls();
+    void SetControlsVisible(bool visible);
+    void UpdateSubtitlePosition();
+    void CycleSubtitle();
+    void CycleAudio();
+    void AdjustSubtitleDelay(double seconds);
     void SeekToPointer(int clientX, bool isFinal);
     void ToggleFullscreen();
     void SetFullscreen(bool fullscreen);
@@ -62,6 +68,11 @@ private:
     POINT lastCursorPosition_{};
     ControlBar::Part hoveredPart_ = ControlBar::Part::None;
     int wheelRemainder_ = 0;
+
+    bool controlsVisible_ = false;
+    int subtitlePosition_ = 100;
+    bool menuOpen_ = false;
+    bool announceSubtitleDelay_ = false;
 
     bool draggingSeek_ = false;
     int lastDragX_ = 0;

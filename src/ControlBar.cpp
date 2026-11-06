@@ -239,6 +239,10 @@ double ControlBar::SeekFractionAt(int clientX) const {
     return std::clamp(static_cast<double>((ToDips(clientX) - layout.trackLeft) / span), 0.0, 1.0);
 }
 
+int ControlBar::ControlsHeight() const {
+    return MulDiv(static_cast<int>(kHitHeight), static_cast<int>(dpi_), 96);
+}
+
 bool ControlBar::UpdateSwapChain() {
     const int height = std::min(clientHeight_, MulDiv(static_cast<int>(kBarHeight), static_cast<int>(dpi_), 96));
     if (swapChain_) {

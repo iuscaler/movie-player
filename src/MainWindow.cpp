@@ -1,10 +1,16 @@
 #include "MainWindow.h"
 
+#include <imm.h>
+
+#include <algorithm>
 #include <cmath>
+#include <cwchar>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
+#include "ContextMenu.h"
+#include "FileDialogs.h"
 #include "TimeFormat.h"
 
 namespace {
@@ -16,6 +22,7 @@ constexpr UINT WM_MPV_WAKEUP = WM_APP + 1;
 
 constexpr int kSeekSeconds = 5;
 constexpr int kVolumeStep = 5;
+constexpr double kSubtitleDelayStep = 0.1;
 constexpr UINT_PTR kIdleTimer = 1;
 constexpr UINT kIdleDelayMs = 2000;
 
@@ -66,6 +73,10 @@ MainWindow::MainWindow(HINSTANCE instance) {
     if (!videoWindow_) {
         throw std::runtime_error("CreateWindowEx failed for the video window");
     }
+    // With a Korean input mode on, letter keys would arrive as VK_PROCESSKEY
+    // instead of as themselves, and shortcuts like S and A would stop working.
+    ImmAssociateContextEx(window_, nullptr, 0);
+
     // mpv's window lives inside this one, on mpv's own thread. Windows skips a
     // disabled child when deciding who gets mouse input, so disabling it sends
     // clicks, the wheel and dropped files to the main window instead of to mpv.
@@ -80,6 +91,7 @@ MainWindow::MainWindow(HINSTANCE instance) {
         const std::wstring text = L"동영상을 재생할 수 없습니다.\n\n" + reason;
         MessageBoxW(window, text.c_str(), kAppTitle, MB_OK | MB_ICONERROR);
     };
+    callbacks.subtitleLoadFailed = [this] { player_->ShowMessage(L"자막 파일을 열 수 없습니다"); };
     callbacks.stateChanged = [this](const PlaybackState& state) { HandleStateChanged(state); };
     player_ = std::make_unique<MpvPlayer>(videoWindow_, std::move(callbacks));
 }
@@ -165,6 +177,9 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return TRUE;
         }
         return DefWindowProcW(window_, message, wParam, lParam);
+    case WM_CONTEXTMENU:
+        HandleContextMenu(PointFromLParam(lParam));
+        return 0;
     case WM_DROPFILES:
         HandleDroppedFiles(reinterpret_cast<HDROP>(wParam));
         return 0;
@@ -191,11 +206,36 @@ void MainWindow::LayoutChildren() {
     if (controlBar_) {
         controlBar_->Resize(client.right, client.bottom, GetDpiForWindow(window_));
     }
+    UpdateSubtitlePosition();
 }
 
 void MainWindow::ShowControls() {
-    controlBar_->SetVisible(true);
+    SetControlsVisible(true);
     SetTimer(window_, kIdleTimer, kIdleDelayMs, nullptr);
+}
+
+void MainWindow::SetControlsVisible(bool visible) {
+    controlsVisible_ = visible;
+    controlBar_->SetVisible(visible);
+    UpdateSubtitlePosition();
+}
+
+void MainWindow::UpdateSubtitlePosition() {
+    if (!player_) {
+        return;
+    }
+    // While the controls show, lift subtitles so the bar doesn't cover them.
+    int position = 100;
+    RECT client{};
+    GetClientRect(window_, &client);
+    if (controlsVisible_ && client.bottom > 0) {
+        const int covered = 100 * controlBar_->ControlsHeight() / client.bottom;
+        position = std::max(100 - covered, 50);
+    }
+    if (position != subtitlePosition_) {
+        subtitlePosition_ = position;
+        player_->SetSubtitlePosition(position);
+    }
 }
 
 void MainWindow::HandleKeyDown(WPARAM key, bool isRepeat) {
@@ -230,7 +270,132 @@ void MainWindow::HandleKeyDown(WPARAM key, bool isRepeat) {
     case VK_ESCAPE:
         SetFullscreen(false);
         break;
+    case 'S':
+        if (!isRepeat) {
+            CycleSubtitle();
+        }
+        break;
+    case 'A':
+        if (!isRepeat) {
+            CycleAudio();
+        }
+        break;
+    case VK_OEM_COMMA:
+        AdjustSubtitleDelay(-kSubtitleDelayStep);
+        break;
+    case VK_OEM_PERIOD:
+        AdjustSubtitleDelay(kSubtitleDelayStep);
+        break;
+    case VK_OEM_2:  // The '/' key.
+        if (!isRepeat) {
+            announceSubtitleDelay_ = true;
+            player_->ResetSubtitleDelay();
+        }
+        break;
     default:
+        break;
+    }
+}
+
+void MainWindow::CycleSubtitle() {
+    // Goes through the tracks in order, with "off" between the last and the first.
+    const MediaTrack* first = nullptr;
+    const MediaTrack* next = nullptr;
+    bool passedSelected = false;
+    for (const MediaTrack& track : playback_.tracks) {
+        if (track.type != TrackType::Subtitle) {
+            continue;
+        }
+        if (!first) {
+            first = &track;
+        }
+        if (passedSelected && !next) {
+            next = &track;
+        }
+        passedSelected = passedSelected || track.selected;
+    }
+    if (!first) {
+        player_->ShowMessage(L"자막 없음");
+    } else if (next || !passedSelected) {
+        const MediaTrack& target = next ? *next : *first;
+        player_->SelectSubtitle(target.id);
+        player_->ShowMessage(L"자막: " + TrackLabel(target));
+    } else {
+        player_->SelectSubtitle(std::nullopt);
+        player_->ShowMessage(L"자막 끔");
+    }
+}
+
+void MainWindow::CycleAudio() {
+    const MediaTrack* first = nullptr;
+    const MediaTrack* next = nullptr;
+    bool passedSelected = false;
+    for (const MediaTrack& track : playback_.tracks) {
+        if (track.type != TrackType::Audio) {
+            continue;
+        }
+        if (!first) {
+            first = &track;
+        }
+        if (passedSelected && !next) {
+            next = &track;
+        }
+        passedSelected = passedSelected || track.selected;
+    }
+    if (const MediaTrack* target = next ? next : first) {
+        player_->SelectAudio(target->id);
+        player_->ShowMessage(L"오디오: " + TrackLabel(*target));
+    } else {
+        player_->ShowMessage(L"오디오 없음");
+    }
+}
+
+void MainWindow::AdjustSubtitleDelay(double seconds) {
+    announceSubtitleDelay_ = true;
+    player_->ChangeSubtitleDelay(seconds);
+}
+
+void MainWindow::HandleContextMenu(POINT screenPoint) {
+    if (screenPoint.x == -1 && screenPoint.y == -1) {
+        GetCursorPos(&screenPoint);  // Opened from the keyboard.
+    }
+    menuOpen_ = true;
+    SetCursorHidden(false);
+    const MenuChoice choice = ShowContextMenu(window_, screenPoint, playback_);
+    menuOpen_ = false;
+    ShowControls();
+
+    switch (choice.action) {
+    case MenuChoice::Action::OpenVideo: {
+        const std::wstring path = PickVideoFile(window_);
+        if (!path.empty()) {
+            Open(path);
+        }
+        break;
+    }
+    case MenuChoice::Action::OpenSubtitle: {
+        const std::wstring path = PickSubtitleFile(window_);
+        if (!path.empty()) {
+            player_->AddSubtitleFile(path);
+        }
+        break;
+    }
+    case MenuChoice::Action::SelectSubtitle:
+        player_->SelectSubtitle(choice.trackId);
+        break;
+    case MenuChoice::Action::SelectAudio:
+        if (choice.trackId) {
+            player_->SelectAudio(*choice.trackId);
+        }
+        break;
+    case MenuChoice::Action::ResetSubtitleDelay:
+        announceSubtitleDelay_ = true;
+        player_->ResetSubtitleDelay();
+        break;
+    case MenuChoice::Action::SetSubtitleEncoding:
+        player_->SetSubtitleEncoding(choice.encoding);
+        break;
+    case MenuChoice::Action::None:
         break;
     }
 }
@@ -276,12 +441,13 @@ void MainWindow::HandleMouseLeave() {
     trackingMouseLeave_ = false;
     hoveredPart_ = ControlBar::Part::None;
     controlBar_->SetHoveredPart(hoveredPart_);
-    if (!draggingSeek_ && !playback_.paused) {
+    if (!draggingSeek_ && !menuOpen_ && !playback_.paused) {
         KillTimer(window_, kIdleTimer);
-        controlBar_->SetVisible(false);
+        SetControlsVisible(false);
     }
-    // The next move into the window must count as movement, even at the same spot.
-    lastCursorPosition_ = {-1, -1};
+    // A real return to the window is always from elsewhere, so this keeps spurious
+    // move messages from counting as movement while the pointer is outside.
+    GetCursorPos(&lastCursorPosition_);
 }
 
 void MainWindow::HandleLeftButtonDown(POINT point) {
@@ -332,11 +498,11 @@ void MainWindow::SeekToPointer(int clientX, bool isFinal) {
 }
 
 void MainWindow::HandleIdleTimeout() {
-    if (draggingSeek_ || hoveredPart_ != ControlBar::Part::None) {
-        return;  // Leaving the bar or finishing the drag starts the timer again.
+    if (draggingSeek_ || menuOpen_ || hoveredPart_ != ControlBar::Part::None) {
+        return;  // Leaving the bar, finishing the drag or closing the menu starts the timer again.
     }
     if (!playback_.paused) {
-        controlBar_->SetVisible(false);
+        SetControlsVisible(false);
     }
     if (fullscreen_) {
         SetCursorHidden(true);
@@ -354,14 +520,26 @@ void MainWindow::HandleDroppedFiles(HDROP drop) {
     DragFinish(drop);
 
     if (!path.empty()) {
-        Open(path);
+        if (IsSubtitleFile(path)) {
+            player_->AddSubtitleFile(path);
+        } else {
+            Open(path);
+        }
         SetForegroundWindow(window_);
     }
 }
 
 void MainWindow::HandleStateChanged(const PlaybackState& state) {
+    const bool delayChanged = state.subtitleDelay != playback_.subtitleDelay;
     playback_ = state;
     UpdateTitle(state);
+
+    if (delayChanged && announceSubtitleDelay_) {
+        announceSubtitleDelay_ = false;
+        wchar_t message[64];
+        swprintf_s(message, L"자막 싱크 %+.1f초", state.subtitleDelay);
+        player_->ShowMessage(message);
+    }
 
     if (seekPreview_ && !draggingSeek_) {
         const bool arrived = state.position && std::abs(*state.position - *seekPreview_) < kSeekPreviewToleranceSeconds;
