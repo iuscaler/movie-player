@@ -48,6 +48,9 @@ public:
     void Open(const std::wstring& path);
     void TogglePause();
     void SeekBy(int seconds);
+    // An exact seek lands on the requested time. Otherwise it lands on a nearby
+    // keyframe, which is much faster on heavy video.
+    void SeekTo(double seconds, bool exact);
     void ChangeVolume(int delta);
 
     void ProcessEvents();

@@ -111,18 +111,23 @@ void MpvPlayer::TogglePause() {
         Command({"seek", "0", "absolute"});
         Command({"set", "pause", "no"});
     } else {
-        Command({"osd-msg", "cycle", "pause"});
+        Command({"cycle", "pause"});
     }
 }
 
 void MpvPlayer::SeekBy(int seconds) {
     const std::string amount = std::to_string(seconds);
-    Command({"osd-msg-bar", "seek", amount.c_str(), "relative+exact"});
+    Command({"seek", amount.c_str(), "relative+exact"});
+}
+
+void MpvPlayer::SeekTo(double seconds, bool exact) {
+    const std::string target = std::to_string(seconds);
+    Command({"seek", target.c_str(), exact ? "absolute+exact" : "absolute+keyframes"});
 }
 
 void MpvPlayer::ChangeVolume(int delta) {
     const std::string amount = std::to_string(delta);
-    Command({"osd-msg-bar", "add", "volume", amount.c_str()});
+    Command({"add", "volume", amount.c_str()});
 }
 
 void MpvPlayer::Command(std::initializer_list<const char*> arguments) {

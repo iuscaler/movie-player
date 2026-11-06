@@ -1,10 +1,11 @@
 #include "MainWindow.h"
 
 #include <cmath>
-#include <cstdio>
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+#include "TimeFormat.h"
 
 namespace {
 
@@ -15,8 +16,14 @@ constexpr UINT WM_MPV_WAKEUP = WM_APP + 1;
 
 constexpr int kSeekSeconds = 5;
 constexpr int kVolumeStep = 5;
-constexpr UINT_PTR kHideCursorTimer = 1;
-constexpr UINT kHideCursorDelayMs = 2000;
+constexpr UINT_PTR kIdleTimer = 1;
+constexpr UINT kIdleDelayMs = 2000;
+
+// After a seek is released, keep showing its target until mpv gets there, so the
+// bar doesn't jump back to the old position. The expiry covers a seek that lands
+// somewhere else, and the tolerance covers one that lands slightly off target.
+constexpr ULONGLONG kSeekPreviewExpiryMs = 3000;
+constexpr double kSeekPreviewToleranceSeconds = 2.0;
 
 void RegisterWindowClass(HINSTANCE instance, const wchar_t* name, WNDPROC proc, UINT style) {
     WNDCLASSEXW windowClass{};
@@ -32,15 +39,8 @@ void RegisterWindowClass(HINSTANCE instance, const wchar_t* name, WNDPROC proc, 
     }
 }
 
-std::wstring FormatTime(double seconds) {
-    const long long total = std::llround(std::floor(seconds < 0 ? 0 : seconds));
-    wchar_t text[32];
-    if (total >= 3600) {
-        swprintf_s(text, L"%lld:%02lld:%02lld", total / 3600, total / 60 % 60, total % 60);
-    } else {
-        swprintf_s(text, L"%02lld:%02lld", total / 60, total % 60);
-    }
-    return text;
+POINT PointFromLParam(LPARAM lParam) {
+    return {static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
 }
 
 }  // namespace
@@ -71,13 +71,16 @@ MainWindow::MainWindow(HINSTANCE instance) {
     // clicks, the wheel and dropped files to the main window instead of to mpv.
     EnableWindow(videoWindow_, FALSE);
 
+    controlBar_ = std::make_unique<ControlBar>(window_);
+    LayoutChildren();
+
     MpvPlayer::Callbacks callbacks;
     callbacks.wakeup = [window = window_] { PostMessageW(window, WM_MPV_WAKEUP, 0, 0); };
     callbacks.playbackError = [window = window_](const std::wstring& reason) {
         const std::wstring text = L"동영상을 재생할 수 없습니다.\n\n" + reason;
         MessageBoxW(window, text.c_str(), kAppTitle, MB_OK | MB_ICONERROR);
     };
-    callbacks.stateChanged = [this](const PlaybackState& state) { UpdateTitle(state); };
+    callbacks.stateChanged = [this](const PlaybackState& state) { HandleStateChanged(state); };
     player_ = std::make_unique<MpvPlayer>(videoWindow_, std::move(callbacks));
 }
 
@@ -88,6 +91,7 @@ void MainWindow::Show(int showCommand) {
 
 void MainWindow::Open(const std::wstring& path) {
     player_->Open(path);
+    ShowControls();
 }
 
 LRESULT CALLBACK MainWindow::WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -106,10 +110,15 @@ LRESULT CALLBACK MainWindow::WindowProc(HWND window, UINT message, WPARAM wParam
 LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_SIZE:
-        if (videoWindow_) {
-            MoveWindow(videoWindow_, 0, 0, LOWORD(lParam), HIWORD(lParam), TRUE);
-        }
+        LayoutChildren();
         return 0;
+    case WM_DPICHANGED: {
+        const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+        SetWindowPos(window_, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                     suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        LayoutChildren();
+        return 0;
+    }
     case WM_MPV_WAKEUP:
         if (player_) {
             player_->ProcessEvents();
@@ -118,19 +127,36 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_KEYDOWN:
         HandleKeyDown(wParam, (lParam & (1 << 30)) != 0);
         return 0;
+    case WM_LBUTTONDOWN:
+        HandleLeftButtonDown(PointFromLParam(lParam));
+        return 0;
     case WM_LBUTTONDBLCLK:
-        ToggleFullscreen();
+        // On the controls, the second click of a double-click is just another click.
+        if (controlBar_->HitTest(PointFromLParam(lParam)) == ControlBar::Part::None) {
+            ToggleFullscreen();
+        } else {
+            HandleLeftButtonDown(PointFromLParam(lParam));
+        }
+        return 0;
+    case WM_LBUTTONUP:
+        HandleLeftButtonUp(PointFromLParam(lParam));
+        return 0;
+    case WM_CAPTURECHANGED:
+        HandleCaptureLost();
         return 0;
     case WM_MOUSEWHEEL:
         HandleMouseWheel(GET_WHEEL_DELTA_WPARAM(wParam));
         return 0;
     case WM_MOUSEMOVE:
-        HandleMouseMove();
+        HandleMouseMove(PointFromLParam(lParam));
+        return 0;
+    case WM_MOUSELEAVE:
+        HandleMouseLeave();
         return 0;
     case WM_TIMER:
-        if (wParam == kHideCursorTimer) {
-            KillTimer(window_, kHideCursorTimer);
-            SetCursorHidden(fullscreen_);
+        if (wParam == kIdleTimer) {
+            KillTimer(window_, kIdleTimer);
+            HandleIdleTimeout();
         }
         return 0;
     case WM_SETCURSOR:
@@ -145,6 +171,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_CLOSE:
         // mpv renders into videoWindow_, so stop it before the window goes away.
         player_.reset();
+        controlBar_.reset();
         DestroyWindow(window_);
         return 0;
     case WM_DESTROY:
@@ -155,24 +182,45 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     }
 }
 
+void MainWindow::LayoutChildren() {
+    RECT client{};
+    GetClientRect(window_, &client);
+    if (videoWindow_) {
+        MoveWindow(videoWindow_, 0, 0, client.right, client.bottom, TRUE);
+    }
+    if (controlBar_) {
+        controlBar_->Resize(client.right, client.bottom, GetDpiForWindow(window_));
+    }
+}
+
+void MainWindow::ShowControls() {
+    controlBar_->SetVisible(true);
+    SetTimer(window_, kIdleTimer, kIdleDelayMs, nullptr);
+}
+
 void MainWindow::HandleKeyDown(WPARAM key, bool isRepeat) {
     switch (key) {
     case VK_SPACE:
         if (!isRepeat) {
             player_->TogglePause();
+            ShowControls();
         }
         break;
     case VK_LEFT:
         player_->SeekBy(-kSeekSeconds);
+        ShowControls();
         break;
     case VK_RIGHT:
         player_->SeekBy(kSeekSeconds);
+        ShowControls();
         break;
     case VK_UP:
         player_->ChangeVolume(kVolumeStep);
+        ShowControls();
         break;
     case VK_DOWN:
         player_->ChangeVolume(-kVolumeStep);
+        ShowControls();
         break;
     case VK_RETURN:
         if (!isRepeat) {
@@ -194,12 +242,19 @@ void MainWindow::HandleMouseWheel(int delta) {
     wheelRemainder_ %= WHEEL_DELTA;
     if (notches != 0) {
         player_->ChangeVolume(notches * kVolumeStep);
+        ShowControls();
     }
 }
 
-void MainWindow::HandleMouseMove() {
+void MainWindow::HandleMouseMove(POINT point) {
+    if (draggingSeek_) {
+        lastDragX_ = point.x;
+        SeekToPointer(point.x, false);
+        return;
+    }
+
     // Windows also sends this when nothing moved, for example after a window
-    // changes under the cursor. Those must not reveal a hidden cursor.
+    // changes under the cursor. Those must not reveal a hidden cursor or the bar.
     POINT position{};
     GetCursorPos(&position);
     if (position.x == lastCursorPosition_.x && position.y == lastCursorPosition_.y) {
@@ -207,9 +262,84 @@ void MainWindow::HandleMouseMove() {
     }
     lastCursorPosition_ = position;
 
+    if (!trackingMouseLeave_) {
+        TRACKMOUSEEVENT track{sizeof(TRACKMOUSEEVENT), TME_LEAVE, window_, 0};
+        trackingMouseLeave_ = TrackMouseEvent(&track) != FALSE;
+    }
     SetCursorHidden(false);
+    ShowControls();
+    hoveredPart_ = controlBar_->HitTest(point);
+    controlBar_->SetHoveredPart(hoveredPart_);
+}
+
+void MainWindow::HandleMouseLeave() {
+    trackingMouseLeave_ = false;
+    hoveredPart_ = ControlBar::Part::None;
+    controlBar_->SetHoveredPart(hoveredPart_);
+    if (!draggingSeek_ && !playback_.paused) {
+        KillTimer(window_, kIdleTimer);
+        controlBar_->SetVisible(false);
+    }
+    // The next move into the window must count as movement, even at the same spot.
+    lastCursorPosition_ = {-1, -1};
+}
+
+void MainWindow::HandleLeftButtonDown(POINT point) {
+    switch (controlBar_->HitTest(point)) {
+    case ControlBar::Part::PlayPause:
+        player_->TogglePause();
+        ShowControls();
+        break;
+    case ControlBar::Part::SeekTrack:
+        draggingSeek_ = true;
+        lastDragX_ = point.x;
+        SetCapture(window_);
+        SeekToPointer(point.x, false);
+        break;
+    default:
+        break;
+    }
+}
+
+void MainWindow::HandleLeftButtonUp(POINT point) {
+    if (!draggingSeek_) {
+        return;
+    }
+    draggingSeek_ = false;  // First, so losing the capture below isn't treated as a cancelled drag.
+    SeekToPointer(point.x, true);
+    ReleaseCapture();
+    ShowControls();
+}
+
+void MainWindow::HandleCaptureLost() {
+    if (draggingSeek_) {
+        draggingSeek_ = false;
+        SeekToPointer(lastDragX_, true);
+        ShowControls();
+    }
+}
+
+void MainWindow::SeekToPointer(int clientX, bool isFinal) {
+    if (!playback_.duration) {
+        return;
+    }
+    const double target = controlBar_->SeekFractionAt(clientX) * *playback_.duration;
+    // Keyframe seeks keep dragging responsive on heavy video; the final one lands exactly.
+    player_->SeekTo(target, isFinal);
+    seekPreview_ = target;
+    seekPreviewExpiry_ = GetTickCount64() + kSeekPreviewExpiryMs;
+    controlBar_->SetSeekPreview(seekPreview_);
+}
+
+void MainWindow::HandleIdleTimeout() {
+    if (draggingSeek_ || hoveredPart_ != ControlBar::Part::None) {
+        return;  // Leaving the bar or finishing the drag starts the timer again.
+    }
+    if (!playback_.paused) {
+        controlBar_->SetVisible(false);
+    }
     if (fullscreen_) {
-        SetTimer(window_, kHideCursorTimer, kHideCursorDelayMs, nullptr);
+        SetCursorHidden(true);
     }
 }
 
@@ -224,9 +354,23 @@ void MainWindow::HandleDroppedFiles(HDROP drop) {
     DragFinish(drop);
 
     if (!path.empty()) {
-        player_->Open(path);
+        Open(path);
         SetForegroundWindow(window_);
     }
+}
+
+void MainWindow::HandleStateChanged(const PlaybackState& state) {
+    playback_ = state;
+    UpdateTitle(state);
+
+    if (seekPreview_ && !draggingSeek_) {
+        const bool arrived = state.position && std::abs(*state.position - *seekPreview_) < kSeekPreviewToleranceSeconds;
+        if (arrived || GetTickCount64() >= seekPreviewExpiry_) {
+            seekPreview_.reset();
+            controlBar_->SetSeekPreview(std::nullopt);
+        }
+    }
+    controlBar_->SetPlayback(state);
 }
 
 void MainWindow::ToggleFullscreen() {
@@ -249,9 +393,7 @@ void MainWindow::SetFullscreen(bool fullscreen) {
         const RECT& area = monitor.rcMonitor;
         SetWindowPos(window_, HWND_TOP, area.left, area.top, area.right - area.left, area.bottom - area.top,
                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-        SetTimer(window_, kHideCursorTimer, kHideCursorDelayMs, nullptr);
     } else {
-        KillTimer(window_, kHideCursorTimer);
         SetCursorHidden(false);
         SetWindowLongPtrW(window_, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
         SetWindowPlacement(window_, &restorePlacement_);
@@ -259,6 +401,7 @@ void MainWindow::SetFullscreen(bool fullscreen) {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
     }
     fullscreen_ = fullscreen;
+    ShowControls();
 }
 
 void MainWindow::SetCursorHidden(bool hidden) {

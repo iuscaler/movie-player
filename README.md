@@ -29,7 +29,8 @@ build\Release\MoviePlayer.exe "동영상 경로"
 | 파일 | 역할 |
 |---|---|
 | `src/main.cpp` | 시작할 파일 결정, 메시지 루프 |
-| `src/MainWindow.*` | Win32 창. mpv가 그릴 영상 자식 창을 가짐 |
+| `src/MainWindow.*` | Win32 창과 입력 처리. mpv가 그릴 영상 자식 창을 가짐 |
+| `src/ControlBar.*` | 영상 위에 합성되는 재생 바 (Direct2D + DirectComposition) |
 | `src/MpvPlayer.*` | libmpv 호출을 모두 담당 |
 
 ## 조작
@@ -42,6 +43,7 @@ build\Release\MoviePlayer.exe "동영상 경로"
 | `Enter`, 더블클릭 | 전체화면 전환 |
 | `Esc` | 전체화면 해제 |
 | 파일 끌어다 놓기 | 해당 파일 재생 |
+| 재생 바 버튼, 탐색 트랙 | 재생/일시정지, 클릭 또는 드래그로 탐색 |
 
 ## 문제 해결
 

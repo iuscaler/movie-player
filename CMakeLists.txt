@@ -31,12 +31,13 @@ set_target_properties(libmpv PROPERTIES
 
 add_executable(MoviePlayer WIN32
     src/main.cpp
+    src/ControlBar.cpp
     src/MainWindow.cpp
     src/MpvPlayer.cpp)
 
 target_compile_definitions(MoviePlayer PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(MoviePlayer PRIVATE /W4 /permissive- /utf-8)
-target_link_libraries(MoviePlayer PRIVATE libmpv comdlg32 ole32 shell32)
+target_link_libraries(MoviePlayer PRIVATE libmpv comdlg32 ole32 shell32 d3d11 dxgi d2d1 dwrite dcomp)
 
 # The executable loads libmpv-2.dll from its own folder.
 add_custom_command(TARGET MoviePlayer POST_BUILD
