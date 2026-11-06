@@ -1,0 +1,14 @@
+# Build output
+/build/
+/out/
+
+# Downloaded by CMake at configure time
+/third_party/
+
+# Local test videos
+/sample/
+
+# Visual Studio
+/.vs/
+*.user
+CMakeUserPresets.json
