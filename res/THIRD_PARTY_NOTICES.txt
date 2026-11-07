@@ -1,3 +1,8 @@
+Movie Player
+  GNU GPL 버전 3 또는 그 이후 버전으로 배포합니다. 전문은 LICENSE 파일에 있습니다.
+  이 프로그램은 어떠한 보증도 제공하지 않습니다.
+  소스 코드: https://github.com/iuscaler/movie-player
+
 Movie Player에 포함된 외부 구성 요소
 
 libmpv-2.dll
@@ -7,3 +12,8 @@ libmpv-2.dll
              https://github.com/shinchiro/mpv-winbuild-cmake
   이 빌드에는 GPL 구성 요소(x264, x265 등)가 포함되어 있습니다.
   각 구성 요소의 라이선스는 위 저장소에서 확인할 수 있습니다.
+
+코덱 특허
+  GPL은 제3자의 특허에 대한 권리를 제공하지 않습니다. H.264, HEVC 등의 코덱은
+  국가와 용도에 따라 특허 라이선스가 필요할 수 있으니, 사용하거나 재배포하기 전에
+  해당 지역의 법을 확인하세요.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(MoviePlayer VERSION 0.1.0 LANGUAGES CXX RC)
+project(MoviePlayer VERSION 0.1.1 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,7 +58,7 @@ add_custom_command(TARGET MoviePlayer POST_BUILD
 
 # cmake --build --preset release --target PACKAGE makes build/MoviePlayer-<version>-win64.zip.
 install(TARGETS MoviePlayer RUNTIME DESTINATION .)
-install(FILES "$<TARGET_FILE:libmpv>" res/THIRD_PARTY_NOTICES.txt DESTINATION .)
+install(FILES "$<TARGET_FILE:libmpv>" LICENSE res/THIRD_PARTY_NOTICES.txt DESTINATION .)
 set(CPACK_GENERATOR ZIP)
 set(CPACK_PACKAGE_FILE_NAME "MoviePlayer-${PROJECT_VERSION}-win64")
 include(CPack)
