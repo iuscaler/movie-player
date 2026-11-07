@@ -213,8 +213,11 @@ void MainWindow::FitWindowToVideo(double requestedScale, bool center) {
     RECT frame{};
     AdjustWindowRectExForDpi(&frame, static_cast<DWORD>(GetWindowLongPtrW(window_, GWL_STYLE)), FALSE,
                              static_cast<DWORD>(GetWindowLongPtrW(window_, GWL_EXSTYLE)), dpi);
-    const int frameWidth = frame.right - frame.left;
-    const int frameHeight = frame.bottom - frame.top;
+    // The frame's sides and bottom are invisible resize borders, which can hang off the
+    // monitor. What has to fit is the picture and the title bar above it.
+    const int workWidth = work.right - work.left;
+    const int workHeight = work.bottom - work.top;
+    const int titleHeight = -frame.top;
 
     // Scale 1 is one video pixel to one screen pixel. Too small a window gets enlarged, and the monitor sets the limit.
     double scale = requestedScale;
@@ -222,18 +225,20 @@ void MainWindow::FitWindowToVideo(double requestedScale, bool center) {
     if (videoWidth * scale < minWidth) {
         scale = static_cast<double>(minWidth) / videoWidth;
     }
-    scale = std::min({scale, static_cast<double>(work.right - work.left - frameWidth) / videoWidth,
-                      static_cast<double>(work.bottom - work.top - frameHeight) / videoHeight});
-    const int width = static_cast<int>(std::lround(videoWidth * scale)) + frameWidth;
-    const int height = static_cast<int>(std::lround(videoHeight * scale)) + frameHeight;
+    scale = std::min({scale, static_cast<double>(workWidth) / videoWidth, static_cast<double>(workHeight - titleHeight) / videoHeight});
+    const int pictureWidth = static_cast<int>(std::lround(videoWidth * scale));
+    const int pictureHeight = static_cast<int>(std::lround(videoHeight * scale));
 
     RECT current{};
     GetWindowRect(window_, &current);
-    const int x = center ? work.left + (work.right - work.left - width) / 2
-                         : std::clamp(static_cast<int>(current.left), static_cast<int>(work.left), static_cast<int>(work.right) - width);
-    const int y = center ? work.top + (work.bottom - work.top - height) / 2
-                         : std::clamp(static_cast<int>(current.top), static_cast<int>(work.top), static_cast<int>(work.bottom) - height);
-    SetWindowPos(window_, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+    const int pictureLeft = center ? work.left + (workWidth - pictureWidth) / 2
+                                   : std::clamp(static_cast<int>(current.left - frame.left), static_cast<int>(work.left),
+                                                static_cast<int>(work.right) - pictureWidth);
+    const int top = center ? work.top + (workHeight - titleHeight - pictureHeight) / 2
+                           : std::clamp(static_cast<int>(current.top), static_cast<int>(work.top),
+                                        static_cast<int>(work.bottom) - titleHeight - pictureHeight);
+    SetWindowPos(window_, nullptr, pictureLeft + frame.left, top, pictureWidth + frame.right - frame.left,
+                 pictureHeight + frame.bottom - frame.top, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 void MainWindow::SetWindowSizePercent(int percent) {
