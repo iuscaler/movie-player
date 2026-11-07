@@ -1,0 +1,9 @@
+Movie Player에 포함된 외부 구성 요소
+
+libmpv-2.dll
+  mpv 0.42.0과 FFmpeg, libass 등을 하나로 묶은 라이브러리입니다.
+  빌드 출처: https://github.com/shinchiro/mpv-winbuild-cmake (릴리스 20261106)
+  소스 코드: https://github.com/mpv-player/mpv
+             https://github.com/shinchiro/mpv-winbuild-cmake
+  이 빌드에는 GPL 구성 요소(x264, x265 등)가 포함되어 있습니다.
+  각 구성 요소의 라이선스는 위 저장소에서 확인할 수 있습니다.

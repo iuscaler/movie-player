@@ -16,6 +16,12 @@ Visual Studio 2026의 "C++를 사용한 데스크톱 개발" 워크로드가 필
   cmake --build --preset release
   ```
 
+## 내려받아 실행
+
+[릴리스](https://github.com/iuscaler/movie-player/releases)에서 zip을 받아 압축을 풀고 `MoviePlayer.exe`를 실행합니다. 설치는 필요 없습니다. 64비트 Windows 10 이상용입니다.
+
+새 zip 만들기: `cmake --build --preset release --target PACKAGE`
+
 ## 실행
 
 ```powershell

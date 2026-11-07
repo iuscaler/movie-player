@@ -1,9 +1,11 @@
 cmake_minimum_required(VERSION 3.25)
-project(MoviePlayer LANGUAGES CXX RC)
+project(MoviePlayer VERSION 0.1.0 LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Built into the executable, so it runs on PCs without the Visual C++ runtime.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # libmpv: pinned to one release and verified by hash. To upgrade, change these
 # three values together (the hash is listed on the GitHub release page).
@@ -53,3 +55,10 @@ target_link_libraries(MoviePlayer PRIVATE libmpv comctl32 comdlg32 ole32 shell32
 add_custom_command(TARGET MoviePlayer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "$<TARGET_FILE:libmpv>" "$<TARGET_FILE_DIR:MoviePlayer>")
+
+# cmake --build --preset release --target PACKAGE makes build/MoviePlayer-<version>-win64.zip.
+install(TARGETS MoviePlayer RUNTIME DESTINATION .)
+install(FILES "$<TARGET_FILE:libmpv>" res/THIRD_PARTY_NOTICES.txt DESTINATION .)
+set(CPACK_GENERATOR ZIP)
+set(CPACK_PACKAGE_FILE_NAME "MoviePlayer-${PROJECT_VERSION}-win64")
+include(CPack)
