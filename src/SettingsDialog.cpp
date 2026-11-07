@@ -29,7 +29,8 @@ constexpr int kGeneralPage[] = {IDC_MOVE_GROUP, IDC_SEEK_LABEL, IDC_SEEK_EDIT, I
                                 IDC_ASSOC_GROUP, IDC_ASSOC_STATUS, IDC_ASSOC_HINT, IDC_ASSOC_REGISTER,
                                 IDC_ASSOC_UNREGISTER, IDC_ASSOC_DEFAULTS};
 constexpr int kSubtitlePage[] = {IDC_FONT_LABEL, IDC_FONT_COMBO, IDC_SIZE_LABEL, IDC_SIZE_EDIT, IDC_SIZE_SPIN,
-                                 IDC_SIZE_UNIT, IDC_OUTLINE_LABEL, IDC_OUTLINE_COMBO, IDC_PREVIEW_LABEL, IDC_PREVIEW, IDC_SUBTITLE_HINT};
+                                 IDC_SIZE_UNIT, IDC_OUTLINE_LABEL, IDC_OUTLINE_COMBO, IDC_HEIGHT_LABEL, IDC_HEIGHT_EDIT,
+                                 IDC_HEIGHT_SPIN, IDC_HEIGHT_UNIT, IDC_PREVIEW_LABEL, IDC_PREVIEW, IDC_SUBTITLE_HINT};
 constexpr int kShortcutPage[] = {IDC_SHORTCUT_LIST, IDC_SHORTCUT_STATUS, IDC_SHORTCUT_CHANGE, IDC_SHORTCUT_CLEAR,
                                  IDC_SHORTCUT_DEFAULTS};
 
@@ -142,6 +143,7 @@ void SettingsDialog::Initialize() {
 
     SendDlgItemMessageW(dialog_, IDC_SEEK_SPIN, UDM_SETRANGE32, kMinSeekSeconds, kMaxSeekSeconds);
     SendDlgItemMessageW(dialog_, IDC_SIZE_SPIN, UDM_SETRANGE32, kMinSubtitleFontSize, kMaxSubtitleFontSize);
+    SendDlgItemMessageW(dialog_, IDC_HEIGHT_SPIN, UDM_SETRANGE32, 0, kMaxSubtitleHeightPercent);
     WriteNumberFields();
 
     FillFontList();
@@ -230,6 +232,7 @@ void SettingsDialog::HandleCommand(int id, int code) {
     }
     case IDC_SEEK_EDIT:
     case IDC_SIZE_EDIT:
+    case IDC_HEIGHT_EDIT:
         if (code == EN_CHANGE && !loading_) {
             ReadNumberFields();
             UpdateApplyButton();
@@ -405,6 +408,10 @@ void SettingsDialog::ReadNumberFields() {
         working_.subtitleStyle.fontSize =
             std::clamp(static_cast<int>(std::min<UINT>(size, kMaxSubtitleFontSize)), kMinSubtitleFontSize, kMaxSubtitleFontSize);
     }
+    const UINT height = GetDlgItemInt(dialog_, IDC_HEIGHT_EDIT, &valid, FALSE);
+    if (valid) {
+        working_.subtitleStyle.heightPercent = static_cast<int>(std::min<UINT>(height, kMaxSubtitleHeightPercent));
+    }
 }
 
 void SettingsDialog::WriteNumberFields() {
@@ -412,6 +419,7 @@ void SettingsDialog::WriteNumberFields() {
     loading_ = true;
     SetDlgItemInt(dialog_, IDC_SEEK_EDIT, static_cast<UINT>(working_.seekSeconds), FALSE);
     SetDlgItemInt(dialog_, IDC_SIZE_EDIT, static_cast<UINT>(working_.subtitleStyle.fontSize), FALSE);
+    SetDlgItemInt(dialog_, IDC_HEIGHT_EDIT, static_cast<UINT>(working_.subtitleStyle.heightPercent), FALSE);
     loading_ = wasLoading;
 }
 

@@ -58,6 +58,7 @@ struct SubtitleStyle {
     std::wstring font;  // Empty means mpv's default.
     int fontSize = kDefaultSubtitleFontSize;
     double outlineSize = kDefaultSubtitleOutlineSize;
+    int heightPercent = 0;  // How far up from the bottom of the picture: 0 to 100.
 
     bool operator==(const SubtitleStyle&) const = default;
 };

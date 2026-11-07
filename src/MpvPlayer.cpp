@@ -67,6 +67,11 @@ bool FlagValue(const mpv_event_property& property) {
     return property.format == MPV_FORMAT_FLAG && *static_cast<const int*>(property.data) != 0;
 }
 
+// mpv counts from the top, with 100 as the bottom.
+std::string PositionOption(const SubtitleStyle& style) {
+    return std::to_string(100 - style.heightPercent);
+}
+
 std::string FontOption(const SubtitleStyle& style) {
     return style.font.empty() ? "sans-serif" : ToUtf8(style.font);
 }
@@ -177,6 +182,7 @@ MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, Subti
         Check(mpv_set_property_string(mpv_, "sub-font", FontOption(subtitleStyle).c_str()), "set sub-font");
         Check(mpv_set_property_string(mpv_, "sub-font-size", std::to_string(subtitleStyle.fontSize).c_str()), "set sub-font-size");
         Check(mpv_set_property_string(mpv_, "sub-outline-size", std::to_string(subtitleStyle.outlineSize).c_str()), "set sub-outline-size");
+        Check(mpv_set_property_string(mpv_, "sub-pos", PositionOption(subtitleStyle).c_str()), "set sub-pos");
         Check(mpv_set_property(mpv_, "volume", MPV_FORMAT_DOUBLE, &state_.volume), "set volume");
         for (size_t i = 0; i < kAdjustmentProperties.size(); ++i) {
             const std::string value = std::to_string(state_.adjustments[i]);
@@ -253,6 +259,8 @@ void MpvPlayer::SetSubtitleStyle(const SubtitleStyle& style) {
     Command({"set", "sub-font-size", size.c_str()});
     const std::string outline = std::to_string(style.outlineSize);
     Command({"set", "sub-outline-size", outline.c_str()});
+    const std::string position = PositionOption(style);
+    Command({"set", "sub-pos", position.c_str()});
 }
 
 void MpvPlayer::TogglePause() {

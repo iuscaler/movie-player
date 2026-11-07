@@ -121,6 +121,10 @@ Settings LoadSettings() {
         preferences.subtitleStyle.fontSize = fontSize;
     }
     std::array<bool, kShortcutCount> stored{};
+    const int heightPercent = ReadInt(path, kSubtitleSection, L"HeightPercent");
+    if (heightPercent >= 0 && heightPercent <= kMaxSubtitleHeightPercent) {
+        preferences.subtitleStyle.heightPercent = heightPercent;
+    }
     const std::wstring outlineText = ReadText(path, kSubtitleSection, L"OutlineSize");
     wchar_t* outlineEnd = nullptr;
     const double outlineSize = std::wcstod(outlineText.c_str(), &outlineEnd);
@@ -177,6 +181,7 @@ void SaveSettings(const Settings& settings) {
     wchar_t outlineSize[32];
     swprintf_s(outlineSize, L"%g", preferences.subtitleStyle.outlineSize);
     WriteText(path, kSubtitleSection, L"OutlineSize", outlineSize);
+    WriteInt(path, kSubtitleSection, L"HeightPercent", preferences.subtitleStyle.heightPercent);
     // Only changed keys are stored, so a future change to a default reaches everyone else.
     for (size_t i = 0; i < kShortcutCount; ++i) {
         const ShortcutInfo& info = AllShortcuts()[i];

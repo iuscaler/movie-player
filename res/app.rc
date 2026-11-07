@@ -48,9 +48,13 @@ BEGIN
     LTEXT           "(10~150, 기본 38)", IDC_SIZE_UNIT, 100, 56, 100, 9
     LTEXT           "외곽선:", IDC_OUTLINE_LABEL, 15, 76, 40, 9
     COMBOBOX        IDC_OUTLINE_COMBO, 55, 74, 70, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "글꼴 미리 보기", IDC_PREVIEW_LABEL, 15, 96, 100, 9
-    CONTROL         "", IDC_PREVIEW, "Static", SS_CENTER | SS_CENTERIMAGE | SS_NOPREFIX | WS_BORDER, 15, 107, 290, 36
-    LTEXT           "적용을 누르면 재생 중인 영상의 자막에 바로 반영됩니다.\n크기는 창 높이 720을 기준으로 한 값이며, 창 크기에 따라 함께 변합니다.\nASS 자막처럼 자체 스타일이 있는 자막은 그 글꼴, 크기, 외곽선을 우선합니다.", IDC_SUBTITLE_HINT, 15, 150, 290, 36
+    LTEXT           "높이:", IDC_HEIGHT_LABEL, 15, 96, 40, 9
+    EDITTEXT        IDC_HEIGHT_EDIT, 55, 94, 40, 13, ES_NUMBER | ES_AUTOHSCROLL
+    CONTROL         "", IDC_HEIGHT_SPIN, "msctls_updown32", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS, 0, 0, 10, 13
+    LTEXT           "% (0은 맨 아래, 100은 맨 위)", IDC_HEIGHT_UNIT, 100, 96, 130, 9
+    LTEXT           "글꼴 미리 보기", IDC_PREVIEW_LABEL, 15, 114, 100, 9
+    CONTROL         "", IDC_PREVIEW, "Static", SS_CENTER | SS_CENTERIMAGE | SS_NOPREFIX | WS_BORDER, 15, 125, 290, 32
+    LTEXT           "적용을 누르면 재생 중인 영상의 자막에 바로 반영됩니다.\n크기는 창 높이 720을 기준으로 한 값이며, 창 크기에 따라 함께 변합니다.\nASS 자막처럼 자체 스타일이나 위치가 있는 자막은 그 설정을 우선합니다.", IDC_SUBTITLE_HINT, 15, 163, 290, 32
 
     // Shortcut page
     CONTROL         "", IDC_SHORTCUT_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 15, 32, 290, 140
