@@ -36,6 +36,10 @@ constexpr int kMaxScreenPercent = 90;
 constexpr int kMinVideoWidth = 320;
 constexpr UINT_PTR kIdleTimer = 1;
 constexpr UINT kIdleDelayMs = 2000;
+constexpr UINT_PTR kDropRetryTimer = 3;
+// Right after a drag from Explorer, a file on a virtual drive such as RaiDrive can open
+// but not yet give its real contents. Opening the same path without a drag works.
+constexpr UINT kDropRetryDelaysMs[] = {500, 1000, 2000};
 
 // After a seek is released, keep showing its target until mpv gets there, so the
 // bar doesn't jump back to the old position. The expiry covers a seek that lands
@@ -112,9 +116,8 @@ MainWindow::MainWindow(HINSTANCE instance, const Settings& settings)
 
     MpvPlayer::Callbacks callbacks;
     callbacks.wakeup = [window = window_] { PostMessageW(window, WM_MPV_WAKEUP, 0, 0); };
-    callbacks.playbackError = [window = window_](const std::wstring& reason) {
-        const std::wstring text = L"동영상을 재생할 수 없습니다.\n\n" + reason;
-        MessageBoxW(window, text.c_str(), kAppTitle, MB_OK | MB_ICONERROR);
+    callbacks.playbackError = [this](const std::wstring& reason, bool unrecognizedFormat) {
+        HandlePlaybackError(reason, unrecognizedFormat);
     };
     callbacks.subtitleLoadFailed = [this] { player_->ShowMessage(L"자막 파일을 열 수 없습니다"); };
     callbacks.stateChanged = [this](const PlaybackState& state) { HandleStateChanged(state); };
@@ -129,7 +132,19 @@ void MainWindow::Show(int showCommand) {
     UpdateWindow(window_);
 }
 
+void MainWindow::HandlePlaybackError(const std::wstring& reason, bool unrecognizedFormat) {
+    if (unrecognizedFormat && !dropRetryPath_.empty() && dropRetryCount_ < std::size(kDropRetryDelaysMs)) {
+        SetTimer(window_, kDropRetryTimer, kDropRetryDelaysMs[dropRetryCount_++], nullptr);
+        return;
+    }
+    dropRetryPath_.clear();
+    const std::wstring text = L"동영상을 재생할 수 없습니다.\n\n" + reason;
+    MessageBoxW(window_, text.c_str(), kAppTitle, MB_OK | MB_ICONERROR);
+}
+
 void MainWindow::Open(const std::wstring& path) {
+    KillTimer(window_, kDropRetryTimer);
+    dropRetryPath_.clear();
     if (IsSubtitleFile(path)) {
         AddSubtitle(path);
     } else {
@@ -189,6 +204,7 @@ void MainWindow::ApplyDefaultWindowSize() {
 }
 
 void MainWindow::HandleVideoReady(int width, int height) {
+    dropRetryPath_.clear();
     videoWidth_ = width;
     videoHeight_ = height;
     const bool center = std::exchange(centerOnFirstFit_, false);
@@ -445,6 +461,11 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             HandleIdleTimeout();
         } else if (wParam == ControlBar::kFadeTimerId && controlBar_) {
             controlBar_->HandleFadeTimer();
+        } else if (wParam == kDropRetryTimer) {
+            KillTimer(window_, kDropRetryTimer);
+            if (!dropRetryPath_.empty()) {
+                OpenVideo(dropRetryPath_);
+            }
         }
         return 0;
     case WM_SETCURSOR:
@@ -475,6 +496,7 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         SaveCurrentSettings();
+        KillTimer(window_, kDropRetryTimer);
         // mpv renders into videoWindow_, so stop it before the window goes away.
         player_.reset();
         controlBar_.reset();
@@ -1053,6 +1075,10 @@ void MainWindow::HandleDroppedFiles(HDROP drop) {
 
     if (!path.empty()) {
         Open(path);
+        if (!IsSubtitleFile(path)) {
+            dropRetryPath_ = path;
+            dropRetryCount_ = 0;
+        }
         SetForegroundWindow(window_);
     }
 }

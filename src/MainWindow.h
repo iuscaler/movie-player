@@ -83,6 +83,7 @@ private:
     void SetVolumeFromPointer(int clientX);
     void ApplyDefaultWindowSize();
     void HandleVideoReady(int width, int height);
+    void HandlePlaybackError(const std::wstring& reason, bool unrecognizedFormat);
     // Sizes the window to show the video at this scale, as far as the monitor allows.
     void FitWindowToVideo(double requestedScale, bool center);
     void SetWindowSizePercent(int percent);
@@ -100,6 +101,9 @@ private:
     Preferences preferences_;
 
     std::filesystem::path subtitleTempDirectory_;
+
+    std::wstring dropRetryPath_;  // The dropped video being opened. Empty once it's settled.
+    size_t dropRetryCount_ = 0;
 
     bool restoringPosition_ = false;
     bool startMaximized_ = false;

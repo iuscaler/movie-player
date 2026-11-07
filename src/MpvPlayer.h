@@ -104,7 +104,8 @@ public:
         // the UI thread, which then calls ProcessEvents().
         std::function<void()> wakeup;
         // The rest are called on the thread running ProcessEvents().
-        std::function<void(const std::wstring& message)> playbackError;
+        // unrecognizedFormat means the file opened, but what was read from it wasn't any known format.
+        std::function<void(const std::wstring& message, bool unrecognizedFormat)> playbackError;
         std::function<void()> subtitleLoadFailed;
         std::function<void(const PlaybackState& state)> stateChanged;
         // A newly opened video is ready to show, at this size in pixels. Not called for audio.

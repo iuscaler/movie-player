@@ -572,7 +572,7 @@ void MpvPlayer::ProcessEvents() {
         } else if (event->event_id == MPV_EVENT_END_FILE) {
             const auto* endFile = static_cast<const mpv_event_end_file*>(event->data);
             if (endFile->reason == MPV_END_FILE_REASON_ERROR) {
-                callbacks_.playbackError(ToWide(mpv_error_string(endFile->error)));
+                callbacks_.playbackError(ToWide(mpv_error_string(endFile->error)), endFile->error == MPV_ERROR_UNKNOWN_FORMAT);
             }
         }
     }
