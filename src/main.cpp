@@ -99,7 +99,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         try {
             MainWindow window(instance, LoadSettings());
             window.Show(showCommand);
-            window.Open(path);
+            window.OpenFromExplorer(path);
             exitCode = RunMessageLoop();
         } catch (const std::exception& error) {
             MessageBoxA(nullptr, error.what(), "Movie Player", MB_OK | MB_ICONERROR);

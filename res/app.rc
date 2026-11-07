@@ -32,12 +32,12 @@ BEGIN
     CONTROL         "", IDC_SEEK_SPIN, "msctls_updown32", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS, 0, 0, 10, 13
     LTEXT           "초 (1~600)", IDC_SEEK_UNIT, 165, 49, 80, 9
 
-    GROUPBOX        "탐색기 연결", IDC_ASSOC_GROUP, 15, 76, 290, 96
+    GROUPBOX        "탐색기 연결", IDC_ASSOC_GROUP, 15, 76, 290, 112
     LTEXT           "", IDC_ASSOC_STATUS, 25, 91, 270, 9
-    LTEXT           "등록하면 영상 파일의 ""연결 프로그램"" 목록에 표시됩니다. 현재 사용자에게만 적용되고 기본 앱은 바뀌지 않습니다. 더블클릭으로 바로 열려면 Windows 기본 앱 설정에서 직접 지정하세요.\n실행 파일을 옮겼다면 다시 등록하세요. 이 항목은 누르는 즉시 적용됩니다.", IDC_ASSOC_HINT, 25, 104, 270, 40
-    PUSHBUTTON      "등록", IDC_ASSOC_REGISTER, 25, 148, 55, 15
-    PUSHBUTTON      "등록 해제", IDC_ASSOC_UNREGISTER, 85, 148, 55, 15
-    PUSHBUTTON      "Windows 기본 앱 설정 열기", IDC_ASSOC_DEFAULTS, 145, 148, 115, 15
+    LTEXT           "등록하면 영상과 자막 파일의 ""연결 프로그램"" 목록에 표시됩니다. 현재 사용자에게만 적용됩니다. 기본 앱을 직접 바꾸지는 않지만, 형식에 따라 다음에 열 때 Windows가 어떤 앱으로 열지 물어볼 수 있습니다. 더블클릭으로 바로 열려면 그때 선택하거나 Windows 기본 앱 설정에서 지정하세요.\n실행 파일을 옮겼다면 다시 등록하세요. 이 항목은 누르는 즉시 적용됩니다.", IDC_ASSOC_HINT, 25, 104, 270, 56
+    PUSHBUTTON      "등록", IDC_ASSOC_REGISTER, 25, 164, 55, 15
+    PUSHBUTTON      "등록 해제", IDC_ASSOC_UNREGISTER, 85, 164, 55, 15
+    PUSHBUTTON      "Windows 기본 앱 설정 열기", IDC_ASSOC_DEFAULTS, 145, 164, 115, 15
 
     // Subtitle page
     LTEXT           "글꼴:", IDC_FONT_LABEL, 15, 36, 40, 9

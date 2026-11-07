@@ -33,6 +33,9 @@ public:
     void Show(int showCommand);
     // Opens a video, or adds a subtitle to the current one, depending on the file type.
     void Open(const std::wstring& path);
+    // The same for a file given from outside, by Explorer or the command line. There a
+    // subtitle means "play this", so it opens its video, not just adds to what's playing.
+    void OpenFromExplorer(const std::wstring& path);
 
 private:
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
@@ -59,7 +62,8 @@ private:
     void ShowChapterList();
     void SeekWithPreview(double target, bool exact);
     void ApplyPreferences(const Preferences& preferences);
-    void OpenVideo(const std::wstring& path);
+    // preferredSubtitle, if given, is selected over any other subtitle once the video is ready.
+    void OpenVideo(const std::wstring& path, const std::wstring& preferredSubtitle = {});
     void AddSubtitle(const std::wstring& path);
     void RestoreWindowPosition(const Settings& settings);
     void SaveCurrentSettings();
@@ -101,6 +105,9 @@ private:
     Preferences preferences_;
 
     std::filesystem::path subtitleTempDirectory_;
+
+    std::wstring currentVideoPath_;
+    std::wstring pendingSubtitleName_;  // The file name of the subtitle to select once the video is ready.
 
     std::wstring dropRetryPath_;  // The dropped video being opened. Empty once it's settled.
     size_t dropRetryCount_ = 0;

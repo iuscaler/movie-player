@@ -550,6 +550,7 @@ void MpvPlayer::ReportVideoSizeIfPending() {
         std::swap(width, height);
     }
     videoSizePending_ = false;
+    callbacks_.stateChanged(state_);  // Whoever gets the next call can rely on the track list.
     callbacks_.videoReady(static_cast<int>(width), static_cast<int>(height));
 }
 

@@ -6,6 +6,7 @@
 #include <shlobj.h>
 
 #include <string>
+#include <utility>
 
 #include "FileDialogs.h"
 
@@ -13,6 +14,8 @@ namespace {
 
 constexpr wchar_t kProgId[] = L"MoviePlayer.Video";
 constexpr wchar_t kProgIdKey[] = L"Software\\Classes\\MoviePlayer.Video";
+constexpr wchar_t kSubtitleProgId[] = L"MoviePlayer.Subtitle";
+constexpr wchar_t kSubtitleProgIdKey[] = L"Software\\Classes\\MoviePlayer.Subtitle";
 constexpr wchar_t kApplicationKey[] = L"Software\\Classes\\Applications\\MoviePlayer.exe";
 constexpr wchar_t kAppKey[] = L"Software\\MoviePlayer";
 constexpr wchar_t kCapabilitiesKey[] = L"Software\\MoviePlayer\\Capabilities";
@@ -63,8 +66,10 @@ void NotifyShell() {
 
 }  // namespace
 
+// True only if subtitles are covered too, so a registration from an older version can be redone.
 bool IsFileAssociationRegistered() {
-    return GetText(std::wstring(kProgIdKey) + L"\\shell\\open\\command", nullptr) == OpenCommand();
+    return GetText(std::wstring(kProgIdKey) + L"\\shell\\open\\command", nullptr) == OpenCommand() &&
+           GetText(std::wstring(kSubtitleProgIdKey) + L"\\shell\\open\\command", nullptr) == OpenCommand();
 }
 
 bool RegisterFileAssociation() {
@@ -75,9 +80,12 @@ bool RegisterFileAssociation() {
     const std::wstring application(kApplicationKey);
     const std::wstring capabilities(kCapabilitiesKey);
 
-    bool ok = SetText(progId, nullptr, L"Movie Player 동영상");
-    ok = SetText(progId + L"\\DefaultIcon", nullptr, icon) && ok;
-    ok = SetText(progId + L"\\shell\\open\\command", nullptr, command) && ok;
+    bool ok = true;
+    for (const auto& [key, name] : {std::pair{progId, L"Movie Player 동영상"}, std::pair{std::wstring(kSubtitleProgIdKey), L"Movie Player 자막"}}) {
+        ok = SetText(key, nullptr, name) && ok;
+        ok = SetText(key + L"\\DefaultIcon", nullptr, icon) && ok;
+        ok = SetText(key + L"\\shell\\open\\command", nullptr, command) && ok;
+    }
 
     ok = SetText(application, L"FriendlyAppName", kAppName) && ok;
     ok = SetText(application + L"\\DefaultIcon", nullptr, icon) && ok;
@@ -87,12 +95,16 @@ bool RegisterFileAssociation() {
     ok = SetText(capabilities, L"ApplicationDescription", L"mpv 기반 동영상 플레이어") && ok;
     ok = SetText(capabilities, L"ApplicationIcon", icon) && ok;
 
-    for (const wchar_t* extension : kVideoExtensions) {
-        const std::wstring classesKey = std::wstring(L"Software\\Classes\\") + extension + L"\\OpenWithProgids";
-        ok = RegSetKeyValueW(HKEY_CURRENT_USER, classesKey.c_str(), kProgId, REG_NONE, nullptr, 0) == ERROR_SUCCESS && ok;
-        ok = SetText(capabilities + L"\\FileAssociations", extension, kProgId) && ok;
-        ok = SetText(application + L"\\SupportedTypes", extension, L"") && ok;
-    }
+    const auto addTypes = [&](const auto& extensions, const wchar_t* id) {
+        for (const wchar_t* extension : extensions) {
+            const std::wstring classesKey = std::wstring(L"Software\\Classes\\") + extension + L"\\OpenWithProgids";
+            ok = RegSetKeyValueW(HKEY_CURRENT_USER, classesKey.c_str(), id, REG_NONE, nullptr, 0) == ERROR_SUCCESS && ok;
+            ok = SetText(capabilities + L"\\FileAssociations", extension, id) && ok;
+            ok = SetText(application + L"\\SupportedTypes", extension, L"") && ok;
+        }
+    };
+    addTypes(kVideoExtensions, kProgId);
+    addTypes(kSubtitleExtensions, kSubtitleProgId);
 
     ok = SetText(kRegisteredApplicationsKey, kRegisteredName, capabilities) && ok;
     NotifyShell();
@@ -101,22 +113,27 @@ bool RegisterFileAssociation() {
 
 void UnregisterFileAssociation() {
     RegDeleteTreeW(HKEY_CURRENT_USER, kProgIdKey);
+    RegDeleteTreeW(HKEY_CURRENT_USER, kSubtitleProgIdKey);
     RegDeleteTreeW(HKEY_CURRENT_USER, kApplicationKey);
     RegDeleteTreeW(HKEY_CURRENT_USER, kAppKey);
     RegDeleteKeyValueW(HKEY_CURRENT_USER, kRegisteredApplicationsKey, kRegisteredName);
 
-    for (const wchar_t* extension : kVideoExtensions) {
-        const std::wstring extensionKey = std::wstring(L"Software\\Classes\\") + extension;
-        const std::wstring openWith = extensionKey + L"\\OpenWithProgids";
-        RegDeleteKeyValueW(HKEY_CURRENT_USER, openWith.c_str(), kProgId);
-        // Remove only what registering would have created, and only if nothing else uses it.
-        if (KeyIsEmpty(openWith)) {
-            RegDeleteKeyW(HKEY_CURRENT_USER, openWith.c_str());
-            if (KeyIsEmpty(extensionKey)) {
-                RegDeleteKeyW(HKEY_CURRENT_USER, extensionKey.c_str());
+    const auto removeTypes = [](const auto& extensions, const wchar_t* id) {
+        for (const wchar_t* extension : extensions) {
+            const std::wstring extensionKey = std::wstring(L"Software\\Classes\\") + extension;
+            const std::wstring openWith = extensionKey + L"\\OpenWithProgids";
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, openWith.c_str(), id);
+            // Remove only what registering would have created, and only if nothing else uses it.
+            if (KeyIsEmpty(openWith)) {
+                RegDeleteKeyW(HKEY_CURRENT_USER, openWith.c_str());
+                if (KeyIsEmpty(extensionKey)) {
+                    RegDeleteKeyW(HKEY_CURRENT_USER, extensionKey.c_str());
+                }
             }
         }
-    }
+    };
+    removeTypes(kVideoExtensions, kProgId);
+    removeTypes(kSubtitleExtensions, kSubtitleProgId);
     NotifyShell();
 }
 

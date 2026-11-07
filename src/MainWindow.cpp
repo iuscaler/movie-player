@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cwchar>
+#include <iterator>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
@@ -138,6 +139,7 @@ void MainWindow::HandlePlaybackError(const std::wstring& reason, bool unrecogniz
         return;
     }
     dropRetryPath_.clear();
+    currentVideoPath_.clear();
     const std::wstring text = L"동영상을 재생할 수 없습니다.\n\n" + reason;
     MessageBoxW(window_, text.c_str(), kAppTitle, MB_OK | MB_ICONERROR);
 }
@@ -153,16 +155,47 @@ void MainWindow::Open(const std::wstring& path) {
     ShowControls();
 }
 
-void MainWindow::OpenVideo(const std::wstring& path) {
+void MainWindow::OpenFromExplorer(const std::wstring& path) {
+    if (!IsSubtitleFile(path)) {
+        Open(path);
+        return;
+    }
+    const std::wstring video = FindVideoForSubtitle(path);
+    if (!video.empty() && _wcsicmp(video.c_str(), currentVideoPath_.c_str()) != 0) {
+        KillTimer(window_, kDropRetryTimer);
+        dropRetryPath_.clear();
+        OpenVideo(video, path);
+        ShowControls();
+    } else if (!currentVideoPath_.empty()) {
+        // Its video is already playing, or it has none: use it with what's on screen.
+        Open(path);
+    } else {
+        const std::wstring text = L"이 자막과 이름이 같은 영상 파일을 찾을 수 없습니다.\n\n" + path;
+        MessageBoxW(window_, text.c_str(), kAppTitle, MB_OK | MB_ICONINFORMATION);
+    }
+}
+
+void MainWindow::OpenVideo(const std::wstring& path, const std::wstring& preferredSubtitle) {
     videoWidth_ = 0;
     videoHeight_ = 0;
+    currentVideoPath_ = path;
+    pendingSubtitleName_.clear();
     // Language parts split out for the previous video aren't needed any more.
     std::error_code error;
     std::filesystem::remove_all(subtitleTempDirectory_, error);
 
     std::vector<std::wstring> subtitles;
+    if (!preferredSubtitle.empty()) {
+        for (const std::filesystem::path& file : IsSmiFile(preferredSubtitle) ? PrepareSmiFile(preferredSubtitle, subtitleTempDirectory_)
+                                                                              : std::vector<std::filesystem::path>{preferredSubtitle}) {
+            subtitles.push_back(file.wstring());
+        }
+        pendingSubtitleName_ = std::filesystem::path(subtitles.front()).filename().wstring();
+    }
     for (const std::filesystem::path& file : PrepareSmiFilesFor(path, subtitleTempDirectory_)) {
-        subtitles.push_back(file.wstring());
+        if (std::find(subtitles.begin(), subtitles.end(), file.wstring()) == subtitles.end()) {
+            subtitles.push_back(file.wstring());
+        }
     }
     player_->Open(path, subtitles);
 }
@@ -205,6 +238,15 @@ void MainWindow::ApplyDefaultWindowSize() {
 
 void MainWindow::HandleVideoReady(int width, int height) {
     dropRetryPath_.clear();
+    if (!pendingSubtitleName_.empty()) {
+        for (const MediaTrack& track : playback_.tracks) {
+            if (track.type == TrackType::Subtitle && _wcsicmp(track.externalFileName.c_str(), pendingSubtitleName_.c_str()) == 0) {
+                player_->SelectSubtitle(track.id);
+                break;
+            }
+        }
+        pendingSubtitleName_.clear();
+    }
     videoWidth_ = width;
     videoHeight_ = height;
     const bool center = std::exchange(centerOnFirstFit_, false);
@@ -317,7 +359,7 @@ void MainWindow::HandleCopyData(const COPYDATASTRUCT& data) {
     SetForegroundWindow(GetLastActivePopup(window_));  // The settings window, if it's open.
     const size_t length = data.cbData / sizeof(wchar_t);
     if (data.lpData && length > 0) {
-        Open(std::wstring(static_cast<const wchar_t*>(data.lpData), length));
+        OpenFromExplorer(std::wstring(static_cast<const wchar_t*>(data.lpData), length));
     }
 }
 
