@@ -7,6 +7,7 @@
 #include <string>
 
 #include "MpvPlayer.h"
+#include "Shortcuts.h"
 
 // What the user picked from the right-click menu.
 struct MenuChoice {
@@ -18,10 +19,10 @@ struct MenuChoice {
         SelectAudio,
         ResetSubtitleDelay,
         SetSubtitleEncoding,
-        RegisterFileAssociation,
-        UnregisterFileAssociation,
+        OpenSettings,
         SetSpeed,
-        ToggleLoop,
+        LoopStart,
+        LoopEnd,
         ClearLoop,
         StepForward,
         StepBackward,
@@ -42,7 +43,11 @@ struct MenuChoice {
 };
 
 // Shows the menu at a screen position and blocks until it closes. Playback keeps running.
-MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& state, bool fileAssociationRegistered);
+MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& state, const ShortcutTable& shortcuts);
+
+// Shows the chapters, centered on a screen position, and blocks until it closes.
+// Returns the index of the one picked.
+std::optional<size_t> ShowChapterMenu(HWND owner, POINT screenCenter, const PlaybackState& state);
 
 // A short human-readable name for a track, for menus and on-screen messages.
 std::wstring TrackLabel(const MediaTrack& track);

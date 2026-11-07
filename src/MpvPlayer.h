@@ -8,6 +8,7 @@
 #include <initializer_list>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct mpv_handle;
@@ -22,9 +23,24 @@ struct MediaTrack {
     std::wstring title;
     std::wstring language;
     std::wstring codec;
+    std::wstring codecDescription;
+    std::wstring codecProfile;
     std::wstring externalFileName;  // Empty for tracks inside the video file.
     int channels = 0;               // Audio only; 0 if unknown.
+    std::wstring channelLayout;     // Audio only, such as "5.1(side)".
+    int sampleRate = 0;             // Audio only; 0 if unknown.
+    int width = 0;                  // Video only; 0 if unknown.
+    int height = 0;
+    double fps = 0.0;
+    int64_t bitrate = 0;            // 0 if unknown.
     bool selected = false;
+    bool isDefault = false;
+    bool forced = false;
+};
+
+struct Chapter {
+    double time = 0.0;
+    std::wstring title;
 };
 
 // How to read subtitle files that aren't Unicode.
@@ -34,6 +50,17 @@ enum class SubtitleEncoding {
 };
 
 enum class AspectMode { Original, Ratio16x9, Ratio4x3, Ratio235x100, Stretch };
+
+inline constexpr int kDefaultSubtitleFontSize = 38;  // mpv's own default.
+inline constexpr double kDefaultSubtitleOutlineSize = 1.65;  // Likewise.
+
+struct SubtitleStyle {
+    std::wstring font;  // Empty means mpv's default.
+    int fontSize = kDefaultSubtitleFontSize;
+    double outlineSize = kDefaultSubtitleOutlineSize;
+
+    bool operator==(const SubtitleStyle&) const = default;
+};
 
 // Picture settings, each from -100 to 100 with 0 meaning unchanged.
 enum class VideoAdjustment { Brightness, Contrast, Saturation, Hue, Gamma };
@@ -49,6 +76,9 @@ struct PlaybackState {
     bool paused = false;
     bool atEnd = false;
     std::vector<MediaTrack> tracks;
+    std::vector<Chapter> chapters;
+    std::optional<int64_t> chapter;  // Index of the current one. Negative before the first.
+    std::vector<std::pair<std::wstring, std::wstring>> metadata;
     double subtitleDelay = 0.0;
     SubtitleEncoding subtitleEncoding = SubtitleEncoding::Korean;
     double speed = 1.0;
@@ -82,7 +112,7 @@ public:
 
     // Renders into videoWindow. Throws std::runtime_error if mpv can't start.
     MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, SubtitleEncoding subtitleEncoding,
-              const std::array<int, kVideoAdjustmentCount>& videoAdjustments);
+              const std::array<int, kVideoAdjustmentCount>& videoAdjustments, const SubtitleStyle& subtitleStyle);
     ~MpvPlayer();
 
     MpvPlayer(const MpvPlayer&) = delete;
@@ -101,8 +131,9 @@ public:
     // Both keep the speed within the supported range. ChangeSpeed returns the result.
     void SetSpeed(double speed);
     double ChangeSpeed(double delta);
-    // The first call marks the loop's start, the second its end, the third clears it.
-    void ToggleLoop();
+    // These mark the current position. With only one end marked, the file's own start or end is the other.
+    void SetLoopStart();
+    void SetLoopEnd();
     void ClearLoop();
     void SetLoop(double start, double end);
     // Pauses if playing, then moves by one frame.
@@ -126,16 +157,24 @@ public:
     void ChangeSubtitleDelay(double seconds);
     void ResetSubtitleDelay();
     void SetSubtitleEncoding(SubtitleEncoding encoding);
+    void SetSubtitleStyle(const SubtitleStyle& style);
 
     // Shows a short message over the video.
     void ShowMessage(const std::wstring& text);
 
     void ProcessEvents();
 
+    // Current values of mpv's properties, for display: empty if there's no such value
+    // right now. Unlike the control methods these wait for mpv, so call them only occasionally.
+    std::wstring PropertyText(const char* name) const;
+    std::optional<double> PropertyNumber(const char* name) const;
+
 private:
     void Command(std::initializer_list<const char*> arguments, uint64_t replyId = 0);
     void UpdateState(const mpv_event_property& property);
     void UpdateTracks(const mpv_node& list);
+    void UpdateChapters(const mpv_node& list);
+    void UpdateMetadata(const mpv_node& map);
     void ReportVideoSizeIfPending();
 
     mpv_handle* mpv_ = nullptr;

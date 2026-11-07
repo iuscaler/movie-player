@@ -67,6 +67,10 @@ bool FlagValue(const mpv_event_property& property) {
     return property.format == MPV_FORMAT_FLAG && *static_cast<const int*>(property.data) != 0;
 }
 
+std::string FontOption(const SubtitleStyle& style) {
+    return style.font.empty() ? "sans-serif" : ToUtf8(style.font);
+}
+
 const char* EncodingOption(SubtitleEncoding encoding) {
     return encoding == SubtitleEncoding::Korean ? "cp949" : "auto";
 }
@@ -82,10 +86,26 @@ MediaTrack TrackFromNode(const mpv_node& node) {
                 track.id = value.u.int64;
             } else if (std::strcmp(key, "demux-channel-count") == 0) {
                 track.channels = static_cast<int>(value.u.int64);
+            } else if (std::strcmp(key, "demux-samplerate") == 0) {
+                track.sampleRate = static_cast<int>(value.u.int64);
+            } else if (std::strcmp(key, "demux-w") == 0) {
+                track.width = static_cast<int>(value.u.int64);
+            } else if (std::strcmp(key, "demux-h") == 0) {
+                track.height = static_cast<int>(value.u.int64);
+            } else if (std::strcmp(key, "demux-bitrate") == 0) {
+                track.bitrate = value.u.int64;
+            }
+        } else if (value.format == MPV_FORMAT_DOUBLE) {
+            if (std::strcmp(key, "demux-fps") == 0) {
+                track.fps = value.u.double_;
             }
         } else if (value.format == MPV_FORMAT_FLAG) {
             if (std::strcmp(key, "selected") == 0) {
                 track.selected = value.u.flag != 0;
+            } else if (std::strcmp(key, "default") == 0) {
+                track.isDefault = value.u.flag != 0;
+            } else if (std::strcmp(key, "forced") == 0) {
+                track.forced = value.u.flag != 0;
             }
         } else if (value.format == MPV_FORMAT_STRING) {
             if (std::strcmp(key, "type") == 0) {
@@ -98,6 +118,12 @@ MediaTrack TrackFromNode(const mpv_node& node) {
                 track.language = ToWide(value.u.string);
             } else if (std::strcmp(key, "codec") == 0) {
                 track.codec = ToWide(value.u.string);
+            } else if (std::strcmp(key, "codec-desc") == 0) {
+                track.codecDescription = ToWide(value.u.string);
+            } else if (std::strcmp(key, "codec-profile") == 0) {
+                track.codecProfile = ToWide(value.u.string);
+            } else if (std::strcmp(key, "demux-channels") == 0) {
+                track.channelLayout = ToWide(value.u.string);
             } else if (std::strcmp(key, "external-filename") == 0) {
                 const std::wstring path = ToWide(value.u.string);
                 const size_t slash = path.find_last_of(L"\\/");
@@ -108,10 +134,24 @@ MediaTrack TrackFromNode(const mpv_node& node) {
     return track;
 }
 
+Chapter ChapterFromNode(const mpv_node& node) {
+    Chapter chapter;
+    const mpv_node_list& fields = *node.u.list;
+    for (int i = 0; i < fields.num; ++i) {
+        const mpv_node& value = fields.values[i];
+        if (std::strcmp(fields.keys[i], "time") == 0 && value.format == MPV_FORMAT_DOUBLE) {
+            chapter.time = value.u.double_;
+        } else if (std::strcmp(fields.keys[i], "title") == 0 && value.format == MPV_FORMAT_STRING) {
+            chapter.title = ToWide(value.u.string);
+        }
+    }
+    return chapter;
+}
+
 }  // namespace
 
 MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, SubtitleEncoding subtitleEncoding,
-                     const std::array<int, kVideoAdjustmentCount>& videoAdjustments)
+                     const std::array<int, kVideoAdjustmentCount>& videoAdjustments, const SubtitleStyle& subtitleStyle)
     : callbacks_(std::move(callbacks)) {
     state_.volume = volume;
     state_.subtitleEncoding = subtitleEncoding;
@@ -134,6 +174,9 @@ MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, Subti
         // mpv's detection misreads CP949, the usual encoding of older Korean subtitles.
         // Unicode files are still recognized with this setting.
         Check(mpv_set_property_string(mpv_, "sub-codepage", EncodingOption(state_.subtitleEncoding)), "set sub-codepage");
+        Check(mpv_set_property_string(mpv_, "sub-font", FontOption(subtitleStyle).c_str()), "set sub-font");
+        Check(mpv_set_property_string(mpv_, "sub-font-size", std::to_string(subtitleStyle.fontSize).c_str()), "set sub-font-size");
+        Check(mpv_set_property_string(mpv_, "sub-outline-size", std::to_string(subtitleStyle.outlineSize).c_str()), "set sub-outline-size");
         Check(mpv_set_property(mpv_, "volume", MPV_FORMAT_DOUBLE, &state_.volume), "set volume");
         for (size_t i = 0; i < kAdjustmentProperties.size(); ++i) {
             const std::string value = std::to_string(state_.adjustments[i]);
@@ -151,6 +194,9 @@ MpvPlayer::MpvPlayer(HWND videoWindow, Callbacks callbacks, double volume, Subti
         Check(mpv_observe_property(mpv_, 0, "pause", MPV_FORMAT_FLAG), "observe pause");
         Check(mpv_observe_property(mpv_, 0, "eof-reached", MPV_FORMAT_FLAG), "observe eof-reached");
         Check(mpv_observe_property(mpv_, 0, "track-list", MPV_FORMAT_NODE), "observe track-list");
+        Check(mpv_observe_property(mpv_, 0, "chapter-list", MPV_FORMAT_NODE), "observe chapter-list");
+        Check(mpv_observe_property(mpv_, 0, "chapter", MPV_FORMAT_INT64), "observe chapter");
+        Check(mpv_observe_property(mpv_, 0, "metadata", MPV_FORMAT_NODE), "observe metadata");
         Check(mpv_observe_property(mpv_, 0, "sub-delay", MPV_FORMAT_DOUBLE), "observe sub-delay");
         Check(mpv_observe_property(mpv_, 0, "ab-loop-a", MPV_FORMAT_DOUBLE), "observe ab-loop-a");
         Check(mpv_observe_property(mpv_, 0, "ab-loop-b", MPV_FORMAT_DOUBLE), "observe ab-loop-b");
@@ -200,6 +246,15 @@ void MpvPlayer::Open(const std::wstring& path, const std::vector<std::wstring>& 
     Command({"set", "pause", "no"});
 }
 
+void MpvPlayer::SetSubtitleStyle(const SubtitleStyle& style) {
+    const std::string font = FontOption(style);
+    const std::string size = std::to_string(style.fontSize);
+    Command({"set", "sub-font", font.c_str()});
+    Command({"set", "sub-font-size", size.c_str()});
+    const std::string outline = std::to_string(style.outlineSize);
+    Command({"set", "sub-outline-size", outline.c_str()});
+}
+
 void MpvPlayer::TogglePause() {
     if (state_.atEnd) {
         Command({"seek", "0", "absolute"});
@@ -242,8 +297,14 @@ double MpvPlayer::ChangeSpeed(double delta) {
     return state_.speed;
 }
 
-void MpvPlayer::ToggleLoop() {
-    Command({"ab-loop"});
+// mpv fills in the position itself. The last one it reported can be slightly behind,
+// and an end point that playback has already passed never triggers the loop.
+void MpvPlayer::SetLoopStart() {
+    Command({"expand-properties", "set", "ab-loop-a", "${=time-pos}"});
+}
+
+void MpvPlayer::SetLoopEnd() {
+    Command({"expand-properties", "set", "ab-loop-b", "${=time-pos}"});
 }
 
 void MpvPlayer::ClearLoop() {
@@ -371,6 +432,53 @@ void MpvPlayer::UpdateTracks(const mpv_node& list) {
     }
 }
 
+void MpvPlayer::UpdateChapters(const mpv_node& list) {
+    state_.chapters.clear();
+    if (list.format != MPV_FORMAT_NODE_ARRAY) {
+        return;
+    }
+    for (int i = 0; i < list.u.list->num; ++i) {
+        const mpv_node& item = list.u.list->values[i];
+        if (item.format == MPV_FORMAT_NODE_MAP) {
+            state_.chapters.push_back(ChapterFromNode(item));
+            if (state_.chapters.back().title.empty()) {
+                state_.chapters.back().title = L"챕터 " + std::to_wstring(i + 1);
+            }
+        }
+    }
+}
+
+void MpvPlayer::UpdateMetadata(const mpv_node& map) {
+    state_.metadata.clear();
+    if (map.format != MPV_FORMAT_NODE_MAP) {
+        return;
+    }
+    for (int i = 0; i < map.u.list->num; ++i) {
+        const mpv_node& value = map.u.list->values[i];
+        if (value.format == MPV_FORMAT_STRING) {
+            state_.metadata.emplace_back(ToWide(map.u.list->keys[i]), ToWide(value.u.string));
+        }
+    }
+}
+
+std::wstring MpvPlayer::PropertyText(const char* name) const {
+    char* value = mpv_get_property_string(mpv_, name);
+    if (!value) {
+        return {};
+    }
+    std::wstring text = ToWide(value);
+    mpv_free(value);
+    return text;
+}
+
+std::optional<double> MpvPlayer::PropertyNumber(const char* name) const {
+    double value = 0.0;
+    if (mpv_get_property(mpv_, name, MPV_FORMAT_DOUBLE, &value) < 0) {
+        return std::nullopt;
+    }
+    return value;
+}
+
 void MpvPlayer::UpdateState(const mpv_event_property& property) {
     const char* name = property.name;
     if (std::strcmp(name, "filename") == 0) {
@@ -398,6 +506,22 @@ void MpvPlayer::UpdateState(const mpv_event_property& property) {
             UpdateTracks(*static_cast<const mpv_node*>(property.data));
         } else {
             state_.tracks.clear();
+        }
+    } else if (std::strcmp(name, "chapter-list") == 0) {
+        if (property.format == MPV_FORMAT_NODE) {
+            UpdateChapters(*static_cast<const mpv_node*>(property.data));
+        } else {
+            state_.chapters.clear();
+        }
+    } else if (std::strcmp(name, "chapter") == 0) {
+        state_.chapter = property.format == MPV_FORMAT_INT64
+            ? std::optional<int64_t>(*static_cast<const int64_t*>(property.data))
+            : std::nullopt;
+    } else if (std::strcmp(name, "metadata") == 0) {
+        if (property.format == MPV_FORMAT_NODE) {
+            UpdateMetadata(*static_cast<const mpv_node*>(property.data));
+        } else {
+            state_.metadata.clear();
         }
     }
 }

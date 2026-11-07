@@ -11,8 +11,9 @@
 #include <vector>
 
 #include "ContextMenu.h"
-#include "FileAssociation.h"
 #include "FileDialogs.h"
+#include "InfoDialog.h"
+#include "SettingsDialog.h"
 #include "SmiSubtitles.h"
 #include "TimeFormat.h"
 
@@ -23,7 +24,6 @@ constexpr wchar_t kAppTitle[] = L"Movie Player";
 constexpr UINT WM_MPV_WAKEUP = WM_APP + 1;
 constexpr int kAppIconId = 1;
 
-constexpr int kSeekSeconds = 5;
 constexpr int kVolumeStep = 5;
 constexpr double kSubtitleDelayStep = 0.1;
 constexpr double kAudioDelayStep = 0.1;
@@ -71,7 +71,8 @@ POINT PointFromLParam(LPARAM lParam) {
 
 }  // namespace
 
-MainWindow::MainWindow(HINSTANCE instance, const Settings& settings) : subtitleTempDirectory_(SubtitleTempDirectory()) {
+MainWindow::MainWindow(HINSTANCE instance, const Settings& settings)
+    : preferences_(settings.preferences), subtitleTempDirectory_(SubtitleTempDirectory()) {
     playback_.volume = settings.volume;
     playback_.subtitleEncoding = settings.subtitleEncoding;
     playback_.adjustments = settings.videoAdjustments;
@@ -117,9 +118,9 @@ MainWindow::MainWindow(HINSTANCE instance, const Settings& settings) : subtitleT
     };
     callbacks.subtitleLoadFailed = [this] { player_->ShowMessage(L"자막 파일을 열 수 없습니다"); };
     callbacks.stateChanged = [this](const PlaybackState& state) { HandleStateChanged(state); };
-    callbacks.videoReady = [this](int width, int height) { FitWindowToVideo(width, height); };
+    callbacks.videoReady = [this](int width, int height) { HandleVideoReady(width, height); };
     player_ = std::make_unique<MpvPlayer>(videoWindow_, std::move(callbacks), settings.volume, settings.subtitleEncoding,
-                                          settings.videoAdjustments);
+                                          settings.videoAdjustments, settings.preferences.subtitleStyle);
 }
 
 void MainWindow::Show(int showCommand) {
@@ -138,6 +139,8 @@ void MainWindow::Open(const std::wstring& path) {
 }
 
 void MainWindow::OpenVideo(const std::wstring& path) {
+    videoWidth_ = 0;
+    videoHeight_ = 0;
     // Language parts split out for the previous video aren't needed any more.
     std::error_code error;
     std::filesystem::remove_all(subtitleTempDirectory_, error);
@@ -185,14 +188,23 @@ void MainWindow::ApplyDefaultWindowSize() {
                  width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-void MainWindow::FitWindowToVideo(int videoWidth, int videoHeight) {
+void MainWindow::HandleVideoReady(int width, int height) {
+    videoWidth_ = width;
+    videoHeight_ = height;
     const bool center = std::exchange(centerOnFirstFit_, false);
     // The user's chosen fullscreen or maximized state takes priority.
-    if (fullscreen_ || IsZoomed(window_) || IsIconic(window_) || videoWidth <= 0 || videoHeight <= 0) {
-        return;
+    if (!fullscreen_ && !IsZoomed(window_) && !IsIconic(window_)) {
+        FitWindowToVideo(1.0, center);
     }
+}
+
+void MainWindow::FitWindowToVideo(double requestedScale, bool center) {
+    // Turned on its side from the menu, the picture needs the other shape.
+    const bool sideways = playback_.rotation % 180 != 0;
+    const int videoWidth = sideways ? videoHeight_ : videoWidth_;
+    const int videoHeight = sideways ? videoWidth_ : videoHeight_;
     MONITORINFO monitor{sizeof(MONITORINFO)};
-    if (!GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) {
+    if (videoWidth <= 0 || videoHeight <= 0 || !GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor)) {
         return;
     }
     const RECT& work = monitor.rcWork;
@@ -204,10 +216,10 @@ void MainWindow::FitWindowToVideo(int videoWidth, int videoHeight) {
     const int frameWidth = frame.right - frame.left;
     const int frameHeight = frame.bottom - frame.top;
 
-    // One video pixel to one screen pixel, unless that's too small or won't fit the monitor.
-    double scale = 1.0;
+    // Scale 1 is one video pixel to one screen pixel. Too small a window gets enlarged, and the monitor sets the limit.
+    double scale = requestedScale;
     const int minWidth = MulDiv(kMinVideoWidth, static_cast<int>(dpi), 96);
-    if (videoWidth < minWidth) {
+    if (videoWidth * scale < minWidth) {
         scale = static_cast<double>(minWidth) / videoWidth;
     }
     scale = std::min({scale, static_cast<double>(work.right - work.left - frameWidth) / videoWidth,
@@ -222,6 +234,21 @@ void MainWindow::FitWindowToVideo(int videoWidth, int videoHeight) {
     const int y = center ? work.top + (work.bottom - work.top - height) / 2
                          : std::clamp(static_cast<int>(current.top), static_cast<int>(work.top), static_cast<int>(work.bottom) - height);
     SetWindowPos(window_, nullptr, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void MainWindow::SetWindowSizePercent(int percent) {
+    if (videoWidth_ <= 0) {
+        player_->ShowMessage(L"크기를 맞출 영상이 없습니다");
+        return;
+    }
+    // Asking for a size means leaving the states that fill the screen.
+    SetFullscreen(false);
+    if (IsZoomed(window_)) {
+        ShowWindow(window_, SW_RESTORE);
+    }
+    FitWindowToVideo(percent / 100.0, false);
+    player_->ShowMessage(L"화면 크기 " + std::to_wstring(percent) + L"%");
+    ShowControls();
 }
 
 void MainWindow::RestoreWindowPosition(const Settings& settings) {
@@ -253,6 +280,7 @@ void MainWindow::SaveCurrentSettings() {
     settings.subtitleEncoding = playback_.subtitleEncoding;
     settings.windowPosition = placement.rcNormalPosition;
     settings.videoAdjustments = playback_.adjustments;
+    settings.preferences = preferences_;
     settings.windowMaximized = placement.showCmd == SW_SHOWMAXIMIZED ||
                                (placement.showCmd == SW_SHOWMINIMIZED && (placement.flags & WPF_RESTORETOMAXIMIZED) != 0);
     SaveSettings(settings);
@@ -265,27 +293,66 @@ void MainWindow::HandleCopyData(const COPYDATASTRUCT& data) {
     if (IsIconic(window_)) {
         ShowWindow(window_, SW_RESTORE);
     }
-    SetForegroundWindow(window_);
+    SetForegroundWindow(GetLastActivePopup(window_));  // The settings window, if it's open.
     const size_t length = data.cbData / sizeof(wchar_t);
     if (data.lpData && length > 0) {
         Open(std::wstring(static_cast<const wchar_t*>(data.lpData), length));
     }
 }
 
-void MainWindow::HandleRegisterFileAssociation() {
-    if (!RegisterFileAssociation()) {
-        MessageBoxW(window_, L"연결 프로그램에 등록하지 못했습니다.", kAppTitle, MB_OK | MB_ICONERROR);
+void MainWindow::RunDialog(const std::function<void()>& show) {
+    // Out of the way, so a subtitle being restyled can be seen. Nothing can bring
+    // the bar back meanwhile, since the disabled window gets no mouse or key input.
+    dialogOpen_ = true;
+    KillTimer(window_, kIdleTimer);
+    hoveredPart_ = ControlBar::Part::None;
+    controlBar_->SetHoveredPart(hoveredPart_);
+    controlBar_->SetVisible(false);
+    SetCursorHidden(false);
+
+    show();
+
+    dialogOpen_ = false;
+    ShowControls();
+}
+
+void MainWindow::OpenSettings() {
+    RunDialog([this] {
+        ShowSettingsDialog(window_, preferences_, [this](const Preferences& preferences) { ApplyPreferences(preferences); });
+    });
+}
+
+void MainWindow::ShowChapterList() {
+    if (playback_.chapters.empty()) {
+        player_->ShowMessage(L"챕터가 없습니다");
         return;
     }
-    const int answer = MessageBoxW(
-        window_,
-        L"\"연결 프로그램\" 목록에 등록했습니다.\n\n"
-        L"영상을 더블클릭해서 바로 열려면 Windows 기본 앱 설정에서 Movie Player를 직접 지정해야 합니다.\n\n"
-        L"지금 기본 앱 설정을 열까요?",
-        kAppTitle, MB_YESNO | MB_ICONINFORMATION);
-    if (answer == IDYES) {
-        OpenDefaultAppsSettings();
+    RECT client{};
+    GetClientRect(window_, &client);
+    POINT center{client.right / 2, client.bottom / 2};
+    ClientToScreen(window_, &center);
+
+    menuOpen_ = true;
+    SetCursorHidden(false);
+    ShowControls();
+    const std::optional<size_t> picked = ShowChapterMenu(window_, center, playback_);
+    menuOpen_ = false;
+    ShowControls();
+
+    // The list can change while the menu is open, if a file arrives from elsewhere.
+    if (picked && *picked < playback_.chapters.size()) {
+        const Chapter& chapter = playback_.chapters[*picked];
+        SeekWithPreview(chapter.time, true);
+        player_->ShowMessage(L"챕터 " + std::to_wstring(*picked + 1) + L"/" + std::to_wstring(playback_.chapters.size()) + L": " + chapter.title);
     }
+}
+
+void MainWindow::ApplyPreferences(const Preferences& preferences) {
+    if (!(preferences.subtitleStyle == preferences_.subtitleStyle)) {
+        player_->SetSubtitleStyle(preferences.subtitleStyle);
+    }
+    preferences_ = preferences;
+    SaveCurrentSettings();
 }
 
 LRESULT CALLBACK MainWindow::WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -328,6 +395,19 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_KEYDOWN:
         HandleKeyDown(wParam, (lParam & (1 << 30)) != 0);
         return 0;
+    // Keys held with Alt, and F10, arrive as system keys.
+    case WM_SYSKEYDOWN:
+        if (HandleKeyDown(wParam, (lParam & (1 << 30)) != 0)) {
+            swallowingSystemKeys_ = true;
+            return 0;
+        }
+        return DefWindowProcW(window_, message, wParam, lParam);
+    case WM_SYSKEYUP:
+        if (swallowingSystemKeys_) {
+            swallowingSystemKeys_ = GetKeyState(VK_MENU) < 0;
+            return 0;
+        }
+        return DefWindowProcW(window_, message, wParam, lParam);
     case WM_LBUTTONDOWN:
         HandleLeftButtonDown(PointFromLParam(lParam));
         return 0;
@@ -375,6 +455,20 @@ LRESULT MainWindow::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         HandleDroppedFiles(reinterpret_cast<HDROP>(wParam));
         return 0;
     case WM_CLOSE:
+        if (menuOpen_) {
+            // Likewise for a menu, whose caller goes on to use the bar.
+            EndMenu();
+            PostMessageW(window_, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        if (dialogOpen_) {
+            // That window is running on top of a call in this one, so finish it first.
+            if (HWND popup = GetWindow(window_, GW_ENABLEDPOPUP)) {
+                PostMessageW(popup, WM_COMMAND, IDCANCEL, 0);
+            }
+            PostMessageW(window_, WM_CLOSE, 0, 0);
+            return 0;
+        }
         SaveCurrentSettings();
         // mpv renders into videoWindow_, so stop it before the window goes away.
         player_.reset();
@@ -409,129 +503,157 @@ void MainWindow::ShowControls() {
     SetTimer(window_, kIdleTimer, kIdleDelayMs, nullptr);
 }
 
-void MainWindow::HandleKeyDown(WPARAM key, bool isRepeat) {
-    switch (key) {
-    case VK_SPACE:
-        if (!isRepeat) {
-            player_->TogglePause();
-            ShowControls();
-        }
-        break;
-    case VK_LEFT:
-        player_->SeekBy(-kSeekSeconds);
+bool MainWindow::HandleKeyDown(WPARAM key, bool isRepeat) {
+    const std::optional<ShortcutAction> action = FindShortcut(preferences_.shortcuts, ChordFromKey(key));
+    if (!action) {
+        return false;
+    }
+    // The message loop has already queued the key's character. A menu opened by this
+    // shortcut would take it as a search for an item, and beep when none matched.
+    MSG character{};
+    while (PeekMessageW(&character, window_, WM_CHAR, WM_DEADCHAR, PM_REMOVE) ||
+           PeekMessageW(&character, window_, WM_SYSCHAR, WM_SYSDEADCHAR, PM_REMOVE)) {
+    }
+    if (!isRepeat || GetShortcutInfo(*action).repeats) {
+        RunShortcut(*action);
+    }
+    return true;
+}
+
+void MainWindow::RunShortcut(ShortcutAction action) {
+    switch (action) {
+    case ShortcutAction::TogglePause:
+        player_->TogglePause();
         ShowControls();
         break;
-    case VK_RIGHT:
-        player_->SeekBy(kSeekSeconds);
+    case ShortcutAction::SeekBackward:
+        player_->SeekBy(-preferences_.seekSeconds);
         ShowControls();
         break;
-    case VK_UP:
+    case ShortcutAction::SeekForward:
+        player_->SeekBy(preferences_.seekSeconds);
+        ShowControls();
+        break;
+    case ShortcutAction::VolumeUp:
         player_->ChangeVolume(kVolumeStep);
         ShowControls();
         break;
-    case VK_DOWN:
+    case ShortcutAction::VolumeDown:
         player_->ChangeVolume(-kVolumeStep);
         ShowControls();
         break;
-    case VK_RETURN:
-        if (!isRepeat) {
-            ToggleFullscreen();
-        }
+    case ShortcutAction::ToggleFullscreen:
+        ToggleFullscreen();
         break;
-    case VK_ESCAPE:
+    case ShortcutAction::ExitFullscreen:
         SetFullscreen(false);
         break;
-    case 'S':
-        if (!isRepeat) {
-            CycleSubtitle();
-        }
+    case ShortcutAction::CycleSubtitle:
+        CycleSubtitle();
         break;
-    case 'A':
-        if (!isRepeat) {
-            CycleAudio();
-        }
+    case ShortcutAction::CycleAudio:
+        CycleAudio();
         break;
-    case VK_OEM_COMMA:
+    case ShortcutAction::SubtitleDelayEarlier:
         AdjustSubtitleDelay(-kSubtitleDelayStep);
         break;
-    case VK_OEM_PERIOD:
+    case ShortcutAction::SubtitleDelayLater:
         AdjustSubtitleDelay(kSubtitleDelayStep);
         break;
-    case VK_OEM_2:  // The '/' key.
-        if (!isRepeat) {
-            announceSubtitleDelay_ = true;
-            player_->ResetSubtitleDelay();
-        }
+    case ShortcutAction::SubtitleDelayReset:
+        announceSubtitleDelay_ = true;
+        player_->ResetSubtitleDelay();
         break;
-    case 'C':
+    case ShortcutAction::SpeedUp:
         ChangeSpeed(kSpeedStep);
         break;
-    case 'X':
+    case ShortcutAction::SpeedDown:
         ChangeSpeed(-kSpeedStep);
         break;
-    case 'Z':
-        if (!isRepeat) {
-            SetSpeed(1.0);
-        }
+    case ShortcutAction::SpeedReset:
+        SetSpeed(1.0);
         break;
-    case 'L':
-        if (!isRepeat) {
-            ToggleLoop();
-        }
+    case ShortcutAction::LoopStart:
+        SetLoopStart();
         break;
-    case 'F':
+    case ShortcutAction::LoopEnd:
+        SetLoopEnd();
+        break;
+    case ShortcutAction::LoopClear:
+        ClearLoop();
+        break;
+    case ShortcutAction::FrameForward:
         StepFrame(true);
         break;
-    case 'D':
+    case ShortcutAction::FrameBackward:
         StepFrame(false);
         break;
-    case 'Q':
+    case ShortcutAction::BrightnessDown:
         AdjustVideo(VideoAdjustment::Brightness, -kVideoAdjustStep);
         break;
-    case 'W':
+    case ShortcutAction::BrightnessUp:
         AdjustVideo(VideoAdjustment::Brightness, kVideoAdjustStep);
         break;
-    case 'E':
+    case ShortcutAction::ContrastDown:
         AdjustVideo(VideoAdjustment::Contrast, -kVideoAdjustStep);
         break;
-    case 'R':
+    case ShortcutAction::ContrastUp:
         AdjustVideo(VideoAdjustment::Contrast, kVideoAdjustStep);
         break;
-    case 'T':
+    case ShortcutAction::SaturationDown:
         AdjustVideo(VideoAdjustment::Saturation, -kVideoAdjustStep);
         break;
-    case 'Y':
+    case ShortcutAction::SaturationUp:
         AdjustVideo(VideoAdjustment::Saturation, kVideoAdjustStep);
         break;
-    case 'U':
+    case ShortcutAction::HueDown:
         AdjustVideo(VideoAdjustment::Hue, -kVideoAdjustStep);
         break;
-    case 'I':
+    case ShortcutAction::HueUp:
         AdjustVideo(VideoAdjustment::Hue, kVideoAdjustStep);
         break;
-    case 'O':
+    case ShortcutAction::GammaDown:
         AdjustVideo(VideoAdjustment::Gamma, -kVideoAdjustStep);
         break;
-    case 'P':
+    case ShortcutAction::GammaUp:
         AdjustVideo(VideoAdjustment::Gamma, kVideoAdjustStep);
         break;
-    case VK_BACK:
-        if (!isRepeat) {
-            ResetVideo();
-        }
+    case ShortcutAction::VideoReset:
+        ResetVideo();
         break;
-    case VK_OEM_4:  // The '[' key.
+    case ShortcutAction::AudioDelayEarlier:
         AdjustAudioDelay(-kAudioDelayStep);
         break;
-    case VK_OEM_6:  // The ']' key.
+    case ShortcutAction::AudioDelayLater:
         AdjustAudioDelay(kAudioDelayStep);
         break;
-    case VK_OEM_5:  // The backslash key.
-        if (!isRepeat) {
-            ResetAudioDelay();
-        }
+    case ShortcutAction::AudioDelayReset:
+        ResetAudioDelay();
         break;
-    default:
+    case ShortcutAction::ChapterList:
+        ShowChapterList();
+        break;
+    case ShortcutAction::ShowInfo:
+        RunDialog([this] {
+            ShowInfoDialog(window_, *player_, playback_, preferences_.shortcuts[static_cast<size_t>(ShortcutAction::ShowInfo)]);
+        });
+        break;
+    case ShortcutAction::OpenSettings:
+        OpenSettings();
+        break;
+    case ShortcutAction::WindowSize50:
+        SetWindowSizePercent(50);
+        break;
+    case ShortcutAction::WindowSize100:
+        SetWindowSizePercent(100);
+        break;
+    case ShortcutAction::WindowSize150:
+        SetWindowSizePercent(150);
+        break;
+    case ShortcutAction::WindowSize200:
+        SetWindowSizePercent(200);
+        break;
+    case ShortcutAction::Count:
         break;
     }
 }
@@ -549,9 +671,23 @@ void MainWindow::SetSpeed(double speed) {
     player_->ShowMessage(message);
 }
 
-void MainWindow::ToggleLoop() {
+void MainWindow::SetLoopStart() {
     announceLoop_ = true;
-    player_->ToggleLoop();
+    player_->SetLoopStart();
+    ShowControls();
+}
+
+void MainWindow::SetLoopEnd() {
+    announceLoop_ = true;
+    restartLoopPending_ = true;
+    player_->SetLoopEnd();
+    ShowControls();
+}
+
+void MainWindow::ClearLoop() {
+    announceLoop_ = true;
+    restartLoopPending_ = false;
+    player_->ClearLoop();
     ShowControls();
 }
 
@@ -657,7 +793,7 @@ void MainWindow::HandleContextMenu(POINT screenPoint) {
     }
     menuOpen_ = true;
     SetCursorHidden(false);
-    const MenuChoice choice = ShowContextMenu(window_, screenPoint, playback_, IsFileAssociationRegistered());
+    const MenuChoice choice = ShowContextMenu(window_, screenPoint, playback_, preferences_.shortcuts);
     menuOpen_ = false;
     ShowControls();
 
@@ -691,22 +827,20 @@ void MainWindow::HandleContextMenu(POINT screenPoint) {
     case MenuChoice::Action::SetSubtitleEncoding:
         player_->SetSubtitleEncoding(choice.encoding);
         break;
-    case MenuChoice::Action::RegisterFileAssociation:
-        HandleRegisterFileAssociation();
-        break;
-    case MenuChoice::Action::UnregisterFileAssociation:
-        UnregisterFileAssociation();
-        player_->ShowMessage(L"연결 프로그램 등록을 해제했습니다");
+    case MenuChoice::Action::OpenSettings:
+        OpenSettings();
         break;
     case MenuChoice::Action::SetSpeed:
         SetSpeed(choice.speed);
         break;
-    case MenuChoice::Action::ToggleLoop:
-        ToggleLoop();
+    case MenuChoice::Action::LoopStart:
+        SetLoopStart();
+        break;
+    case MenuChoice::Action::LoopEnd:
+        SetLoopEnd();
         break;
     case MenuChoice::Action::ClearLoop:
-        announceLoop_ = true;
-        player_->ClearLoop();
+        ClearLoop();
         break;
     case MenuChoice::Action::StepForward:
         StepFrame(true);
@@ -746,6 +880,29 @@ void MainWindow::HandleMouseWheel(int delta) {
 }
 
 void MainWindow::HandleMouseMove(POINT point) {
+    if (drag_ == Drag::Window) {
+        // Only a real drag moves the window, so clicks and double-clicks work as they always did.
+        const UINT dpi = GetDpiForWindow(window_);
+        if (std::abs(point.x - dragStart_.x) > GetSystemMetricsForDpi(SM_CXDRAG, dpi) ||
+            std::abs(point.y - dragStart_.y) > GetSystemMetricsForDpi(SM_CYDRAG, dpi)) {
+            drag_ = Drag::None;
+            ReleaseCapture();
+            POINT pressed = dragStart_;
+            ClientToScreen(window_, &pressed);
+            POINT screen{};
+            GetCursorPos(&screen);
+            // Catch up with the pointer's travel so far. Windows only follows it from here on.
+            if (!IsZoomed(window_)) {
+                RECT current{};
+                GetWindowRect(window_, &current);
+                SetWindowPos(window_, nullptr, current.left + screen.x - pressed.x, current.top + screen.y - pressed.y, 0, 0,
+                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            // From here Windows handles it as if the title bar had been pressed.
+            SendMessageW(window_, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(screen.x, screen.y));
+        }
+        return;
+    }
     if (drag_ == Drag::Seek) {
         lastDragX_ = point.x;
         SeekToPointer(point.x, false);
@@ -808,6 +965,14 @@ void MainWindow::HandleLeftButtonDown(POINT point) {
     case ControlBar::Part::Fullscreen:
         ToggleFullscreen();
         break;
+    case ControlBar::Part::None:
+    case ControlBar::Part::Background:
+        if (!fullscreen_) {
+            drag_ = Drag::Window;
+            dragStart_ = point;
+            SetCapture(window_);
+        }
+        break;
     default:
         break;
     }
@@ -821,7 +986,7 @@ void MainWindow::HandleLeftButtonUp(POINT point) {
     drag_ = Drag::None;  // First, so losing the capture below isn't treated as a cancelled drag.
     if (finished == Drag::Seek) {
         SeekToPointer(point.x, true);
-    } else {
+    } else if (finished == Drag::Volume) {
         SetVolumeFromPointer(point.x);
     }
     ReleaseCapture();
@@ -848,9 +1013,12 @@ void MainWindow::SeekToPointer(int clientX, bool isFinal) {
     if (!playback_.duration) {
         return;
     }
-    const double target = controlBar_->SeekFractionAt(clientX) * *playback_.duration;
     // Keyframe seeks keep dragging responsive on heavy video; the final one lands exactly.
-    player_->SeekTo(target, isFinal);
+    SeekWithPreview(controlBar_->SeekFractionAt(clientX) * *playback_.duration, isFinal);
+}
+
+void MainWindow::SeekWithPreview(double target, bool exact) {
+    player_->SeekTo(target, exact);
     seekPreview_ = target;
     seekPreviewExpiry_ = GetTickCount64() + kSeekPreviewExpiryMs;
     controlBar_->SetSeekPreview(seekPreview_);
@@ -860,10 +1028,10 @@ void MainWindow::HandleIdleTimeout() {
     if (drag_ != Drag::None || menuOpen_ || hoveredPart_ != ControlBar::Part::None) {
         return;  // Leaving the bar, finishing the drag or closing the menu starts the timer again.
     }
-    if (!playback_.paused) {
+    if (!playback_.paused || dialogOpen_) {
         controlBar_->SetVisible(false);
     }
-    if (fullscreen_) {
+    if (fullscreen_ && !dialogOpen_) {
         SetCursorHidden(true);
     }
 }
@@ -897,16 +1065,29 @@ void MainWindow::HandleStateChanged(const PlaybackState& state) {
         player_->ShowMessage(message);
     }
 
-    // Seeking back before marking the end leaves the two the wrong way round, and
-    // mpv wouldn't loop that. Swap them; the announcement waits for the corrected state.
+    // Marking the points in the other order leaves them the wrong way round. Swap them;
+    // the rest waits for the corrected state.
     if (state.loopStart && state.loopEnd && *state.loopEnd < *state.loopStart) {
+        restartLoopPending_ = true;
         player_->SetLoop(*state.loopEnd, *state.loopStart);
-    } else if (loopChanged && announceLoop_) {
+        return;
+    }
+    // mpv only loops if it sees playback reach the end point, and a frame shown just as
+    // the point is set can already be past it. So don't wait: this is the end, go back.
+    if (loopChanged && restartLoopPending_ && state.loopEnd) {
+        restartLoopPending_ = false;
+        if (!state.paused) {
+            player_->SeekTo(state.loopStart.value_or(0.0), true);
+        }
+    }
+    if (loopChanged && announceLoop_) {
         announceLoop_ = false;
         if (state.loopStart && state.loopEnd) {
             player_->ShowMessage(L"구간 반복 " + FormatTime(*state.loopStart) + L" ~ " + FormatTime(*state.loopEnd));
         } else if (state.loopStart) {
             player_->ShowMessage(L"구간 시작 " + FormatTime(*state.loopStart));
+        } else if (state.loopEnd) {
+            player_->ShowMessage(L"구간 끝 " + FormatTime(*state.loopEnd));
         } else {
             player_->ShowMessage(L"구간 반복 해제");
         }

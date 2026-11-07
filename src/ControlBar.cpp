@@ -33,8 +33,9 @@ constexpr float kTrackThickness = 4.0f;
 constexpr float kTrackThicknessHovered = 6.0f;
 constexpr float kThumbRadius = 7.0f;
 constexpr float kFontSize = 14.0f;
-constexpr float kLoopMarkHalfHeight = 7.0f;
-constexpr float kLoopMarkWidth = 2.0f;
+constexpr float kMarkWidth = 2.0f;
+constexpr float kMarkIconHeight = 3.0f;
+constexpr float kMarkIconHalfWidth = 2.5f;
 constexpr double kMaxVolume = 130.0;  // mpv's default volume-max.
 
 constexpr double kFadeSeconds = 0.12;
@@ -44,8 +45,10 @@ constexpr D2D1_COLOR_F kText{1.0f, 1.0f, 1.0f, 0.95f};
 constexpr D2D1_COLOR_F kHoverFill{1.0f, 1.0f, 1.0f, 0.16f};
 constexpr D2D1_COLOR_F kTrack{1.0f, 1.0f, 1.0f, 0.32f};
 constexpr D2D1_COLOR_F kTrackFill{1.0f, 1.0f, 1.0f, 0.95f};
-constexpr D2D1_COLOR_F kLoopRegion{1.0f, 0.72f, 0.2f, 0.75f};
-constexpr D2D1_COLOR_F kLoopMark{1.0f, 0.72f, 0.2f, 1.0f};
+constexpr D2D1_COLOR_F kLoopRegion{1.0f, 0.42f, 0.0f, 0.8f};
+constexpr D2D1_COLOR_F kLoopMark{1.0f, 0.42f, 0.0f, 1.0f};
+constexpr D2D1_COLOR_F kLoopPlayed{1.0f, 0.78f, 0.56f, 1.0f};
+constexpr D2D1_COLOR_F kChapterMark{1.0f, 0.85f, 0.0f, 1.0f};
 constexpr D2D1_COLOR_F kScrimBottom{0.0f, 0.0f, 0.0f, 0.72f};
 constexpr D2D1_COLOR_F kScrimTop{0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -84,6 +87,16 @@ ControlBar::ControlBar(HWND window) : window_(window) {
     sink->AddLine(D2D1::Point2F(-6.0f, 9.0f));
     sink->EndFigure(D2D1_FIGURE_END_CLOSED);
     Check(sink->Close(), "ID2D1GeometrySink::Close");
+
+    // A downward triangle with its point at the origin.
+    ComPtr<ID2D1GeometrySink> markSink;
+    Check(d2dFactory_->CreatePathGeometry(&markIcon_), "CreatePathGeometry");
+    Check(markIcon_->Open(&markSink), "ID2D1PathGeometry::Open");
+    markSink->BeginFigure(D2D1::Point2F(0.0f, 0.0f), D2D1_FIGURE_BEGIN_FILLED);
+    markSink->AddLine(D2D1::Point2F(-kMarkIconHalfWidth, -kMarkIconHeight));
+    markSink->AddLine(D2D1::Point2F(kMarkIconHalfWidth, -kMarkIconHeight));
+    markSink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    Check(markSink->Close(), "ID2D1GeometrySink::Close");
 
     if (!CreateDeviceResources()) {
         throw std::runtime_error("ControlBar: could not create the graphics device");
@@ -278,6 +291,12 @@ ControlBar::Frame ControlBar::ComputeFrame(const Layout& layout) const {
         };
         frame.loopStartPixels = playback_.loopStart ? toPixels(*playback_.loopStart) : -1;
         frame.loopEndPixels = playback_.loopEnd ? toPixels(*playback_.loopEnd) : -1;
+        // The first chapter usually starts at 0, where there's nothing to separate.
+        for (const Chapter& chapter : playback_.chapters) {
+            if (chapter.time > 0.0 && chapter.time < *playback_.duration) {
+                frame.chapterPixels.push_back(toPixels(chapter.time));
+            }
+        }
     }
     frame.fullscreen = fullscreen_;
     frame.paused = playback_.paused;
@@ -470,23 +489,46 @@ void ControlBar::DrawSeekTrack(const Layout& layout, const Frame& frame) {
     const auto bar = [&](float left, float right) {
         return D2D1::RoundedRect(D2D1::RectF(left, layout.centerY - half, right, layout.centerY + half), half, half);
     };
-    brush_->SetColor(kTrack);
-    context_->FillRoundedRectangle(bar(layout.trackLeft, layout.trackRight), brush_.Get());
-    brush_->SetColor(kTrackFill);
-    context_->FillRoundedRectangle(bar(layout.trackLeft, fillRight), brush_.Get());
-
     const float startX = layout.trackLeft + static_cast<float>(frame.loopStartPixels) * toDips;
     const float endX = layout.trackLeft + static_cast<float>(frame.loopEndPixels) * toDips;
+
+    brush_->SetColor(kTrack);
+    context_->FillRoundedRectangle(bar(layout.trackLeft, layout.trackRight), brush_.Get());
     if (frame.loopStartPixels >= 0 && frame.loopEndPixels >= 0) {
         brush_->SetColor(kLoopRegion);
         context_->FillRectangle(D2D1::RectF(std::min(startX, endX), layout.centerY - half, std::max(startX, endX), layout.centerY + half), brush_.Get());
     }
-    brush_->SetColor(kLoopMark);
-    for (const auto& [pixels, x] : {std::pair{frame.loopStartPixels, startX}, std::pair{frame.loopEndPixels, endX}}) {
-        if (pixels >= 0) {
-            context_->FillRectangle(D2D1::RectF(x - kLoopMarkWidth / 2.0f, layout.centerY - kLoopMarkHalfHeight,
-                                                x + kLoopMarkWidth / 2.0f, layout.centerY + kLoopMarkHalfHeight), brush_.Get());
+    brush_->SetColor(kTrackFill);
+    context_->FillRoundedRectangle(bar(layout.trackLeft, fillRight), brush_.Get());
+    if (frame.loopStartPixels >= 0 && frame.loopEndPixels >= 0) {
+        // Still lighter than the loop's unplayed part, so the position stands out.
+        const float left = std::min(startX, endX);
+        const float right = std::min(std::max(startX, endX), fillRight);
+        if (right > left) {
+            brush_->SetColor(kLoopPlayed);
+            context_->FillRectangle(D2D1::RectF(left, layout.centerY - half, right, layout.centerY + half), brush_.Get());
         }
+    }
+
+    // Both kinds of mark are a line across the track with a triangle pointing at it:
+    // from above for chapters, from below for the ends of a loop.
+    const auto drawMark = [&](float x, bool fromBelow) {
+        context_->FillRectangle(D2D1::RectF(x - kMarkWidth / 2.0f, layout.centerY - half, x + kMarkWidth / 2.0f, layout.centerY + half), brush_.Get());
+        context_->SetTransform(fromBelow ? D2D1::Matrix3x2F::Scale(1.0f, -1.0f) * D2D1::Matrix3x2F::Translation(x, layout.centerY + half)
+                                         : D2D1::Matrix3x2F::Translation(x, layout.centerY - half));
+        context_->FillGeometry(markIcon_.Get(), brush_.Get());
+        context_->SetTransform(D2D1::Matrix3x2F::Identity());
+    };
+    brush_->SetColor(kChapterMark);
+    for (const int pixels : frame.chapterPixels) {
+        drawMark(layout.trackLeft + static_cast<float>(pixels) * toDips, false);
+    }
+    brush_->SetColor(kLoopMark);
+    if (frame.loopStartPixels >= 0) {
+        drawMark(startX, true);
+    }
+    if (frame.loopEndPixels >= 0) {
+        drawMark(endX, true);
     }
 
     if (emphasized) {

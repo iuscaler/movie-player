@@ -5,6 +5,7 @@
 #include <shellapi.h>
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -37,7 +38,9 @@ private:
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
 
-    void HandleKeyDown(WPARAM key, bool isRepeat);
+    // Returns whether the key was a shortcut.
+    bool HandleKeyDown(WPARAM key, bool isRepeat);
+    void RunShortcut(ShortcutAction action);
     void HandleMouseWheel(int delta);
     void HandleMouseMove(POINT point);
     void HandleMouseLeave();
@@ -48,9 +51,14 @@ private:
     void HandleDroppedFiles(HDROP drop);
     void HandleContextMenu(POINT screenPoint);
     void HandleCopyData(const COPYDATASTRUCT& data);
-    void HandleRegisterFileAssociation();
     void HandleStateChanged(const PlaybackState& state);
 
+    // Runs a blocking window over the video, keeping the bar and cursor out of its way.
+    void RunDialog(const std::function<void()>& show);
+    void OpenSettings();
+    void ShowChapterList();
+    void SeekWithPreview(double target, bool exact);
+    void ApplyPreferences(const Preferences& preferences);
     void OpenVideo(const std::wstring& path);
     void AddSubtitle(const std::wstring& path);
     void RestoreWindowPosition(const Settings& settings);
@@ -62,7 +70,9 @@ private:
     void AdjustSubtitleDelay(double seconds);
     void ChangeSpeed(double delta);
     void SetSpeed(double speed);
-    void ToggleLoop();
+    void SetLoopStart();
+    void SetLoopEnd();
+    void ClearLoop();
     void StepFrame(bool forward);
     void SetAspect(AspectMode aspect);
     void SetRotation(int degrees);
@@ -72,7 +82,10 @@ private:
     void ResetAudioDelay();
     void SetVolumeFromPointer(int clientX);
     void ApplyDefaultWindowSize();
-    void FitWindowToVideo(int videoWidth, int videoHeight);
+    void HandleVideoReady(int width, int height);
+    // Sizes the window to show the video at this scale, as far as the monitor allows.
+    void FitWindowToVideo(double requestedScale, bool center);
+    void SetWindowSizePercent(int percent);
     void SeekToPointer(int clientX, bool isFinal);
     void ToggleFullscreen();
     void SetFullscreen(bool fullscreen);
@@ -84,12 +97,15 @@ private:
     std::unique_ptr<ControlBar> controlBar_;
     std::unique_ptr<MpvPlayer> player_;
     PlaybackState playback_;
+    Preferences preferences_;
 
     std::filesystem::path subtitleTempDirectory_;
 
     bool restoringPosition_ = false;
     bool startMaximized_ = false;
     bool centerOnFirstFit_ = false;
+    int videoWidth_ = 0;  // The open video's own size. 0 if it has none, or isn't ready yet.
+    int videoHeight_ = 0;
 
     bool fullscreen_ = false;
     WINDOWPLACEMENT restorePlacement_{sizeof(WINDOWPLACEMENT)};
@@ -101,11 +117,15 @@ private:
     int wheelRemainder_ = 0;
 
     bool menuOpen_ = false;
+    bool dialogOpen_ = false;
+    bool swallowingSystemKeys_ = false;  // An Alt shortcut ran, so releasing Alt mustn't open the system menu.
     bool announceSubtitleDelay_ = false;
     bool announceLoop_ = false;
+    bool restartLoopPending_ = false;  // Playback is at the loop's new end, so it should go back to the start.
 
-    enum class Drag { None, Seek, Volume };
+    enum class Drag { None, Seek, Volume, Window };
     Drag drag_ = Drag::None;
+    POINT dragStart_{};
     int lastDragX_ = 0;
     std::optional<double> seekPreview_;
     ULONGLONG seekPreviewExpiry_ = 0;

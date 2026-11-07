@@ -1,0 +1,45 @@
+#pragma once
+
+// Shared between res/app.rc and the code.
+#define IDD_SETTINGS 100
+#define IDD_INFO 101
+
+#define IDC_APPLY 1000
+#define IDC_TAB 1001
+
+// Information window
+#define IDC_INFO_TAB 1400
+#define IDC_INFO_LIST 1401
+
+// General page
+#define IDC_MOVE_GROUP 1100
+#define IDC_SEEK_LABEL 1101
+#define IDC_SEEK_EDIT 1102
+#define IDC_SEEK_SPIN 1103
+#define IDC_SEEK_UNIT 1104
+#define IDC_ASSOC_GROUP 1105
+#define IDC_ASSOC_STATUS 1106
+#define IDC_ASSOC_HINT 1107
+#define IDC_ASSOC_REGISTER 1108
+#define IDC_ASSOC_UNREGISTER 1109
+#define IDC_ASSOC_DEFAULTS 1110
+
+// Subtitle page
+#define IDC_FONT_LABEL 1200
+#define IDC_FONT_COMBO 1201
+#define IDC_SIZE_LABEL 1202
+#define IDC_SIZE_EDIT 1203
+#define IDC_SIZE_SPIN 1204
+#define IDC_SIZE_UNIT 1205
+#define IDC_PREVIEW_LABEL 1206
+#define IDC_PREVIEW 1207
+#define IDC_SUBTITLE_HINT 1208
+#define IDC_OUTLINE_LABEL 1209
+#define IDC_OUTLINE_COMBO 1210
+
+// Shortcut page
+#define IDC_SHORTCUT_LIST 1300
+#define IDC_SHORTCUT_STATUS 1301
+#define IDC_SHORTCUT_CHANGE 1302
+#define IDC_SHORTCUT_CLEAR 1303
+#define IDC_SHORTCUT_DEFAULTS 1304

@@ -35,15 +35,19 @@ add_executable(MoviePlayer WIN32
     src/ControlBar.cpp
     src/FileAssociation.cpp
     src/FileDialogs.cpp
+    src/InfoDialog.cpp
     src/MainWindow.cpp
     src/MpvPlayer.cpp
+    src/PlaybackInfo.cpp
     src/Settings.cpp
+    src/SettingsDialog.cpp
+    src/Shortcuts.cpp
     src/SmiSubtitles.cpp
     res/app.rc)
 
 target_compile_definitions(MoviePlayer PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(MoviePlayer PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/W4 /permissive- /utf-8>)
-target_link_libraries(MoviePlayer PRIVATE libmpv comdlg32 ole32 shell32 imm32 advapi32 d3d11 dxgi d2d1 dwrite dcomp)
+target_link_libraries(MoviePlayer PRIVATE libmpv comctl32 comdlg32 ole32 shell32 imm32 advapi32 d3d11 dxgi d2d1 dwrite dcomp)
 
 # The executable loads libmpv-2.dll from its own folder.
 add_custom_command(TARGET MoviePlayer POST_BUILD

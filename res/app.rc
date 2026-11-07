@@ -1,1 +1,65 @@
+#pragma code_page(65001)
+
+#include <windows.h>
+#include <commctrl.h>
+
+#include "../src/Resource.h"
+
 1 ICON "app.ico"
+
+IDD_INFO DIALOGEX 0, 0, 360, 238
+STYLE DS_MODALFRAME | DS_SHELLFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "재생 정보"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_INFO_TAB, "SysTabControl32", WS_TABSTOP, 7, 7, 346, 14
+    CONTROL         "", IDC_INFO_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 7, 26, 346, 184
+    DEFPUSHBUTTON   "닫기", IDCANCEL, 303, 216, 50, 15
+END
+
+IDD_SETTINGS DIALOGEX 0, 0, 320, 238
+STYLE DS_MODALFRAME | DS_SHELLFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "설정"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    // Only the strip of tabs. The pages sit on the dialog itself, below it.
+    CONTROL         "", IDC_TAB, "SysTabControl32", WS_TABSTOP, 7, 7, 306, 14
+
+    // General page
+    GROUPBOX        "이동", IDC_MOVE_GROUP, 15, 32, 290, 36
+    LTEXT           "앞으로/뒤로 이동 간격:", IDC_SEEK_LABEL, 25, 49, 92, 9
+    EDITTEXT        IDC_SEEK_EDIT, 120, 47, 40, 13, ES_NUMBER | ES_AUTOHSCROLL
+    CONTROL         "", IDC_SEEK_SPIN, "msctls_updown32", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS, 0, 0, 10, 13
+    LTEXT           "초 (1~600)", IDC_SEEK_UNIT, 165, 49, 80, 9
+
+    GROUPBOX        "탐색기 연결", IDC_ASSOC_GROUP, 15, 76, 290, 96
+    LTEXT           "", IDC_ASSOC_STATUS, 25, 91, 270, 9
+    LTEXT           "등록하면 영상 파일의 ""연결 프로그램"" 목록에 표시됩니다. 현재 사용자에게만 적용되고 기본 앱은 바뀌지 않습니다. 더블클릭으로 바로 열려면 Windows 기본 앱 설정에서 직접 지정하세요.\n실행 파일을 옮겼다면 다시 등록하세요. 이 항목은 누르는 즉시 적용됩니다.", IDC_ASSOC_HINT, 25, 104, 270, 40
+    PUSHBUTTON      "등록", IDC_ASSOC_REGISTER, 25, 148, 55, 15
+    PUSHBUTTON      "등록 해제", IDC_ASSOC_UNREGISTER, 85, 148, 55, 15
+    PUSHBUTTON      "Windows 기본 앱 설정 열기", IDC_ASSOC_DEFAULTS, 145, 148, 115, 15
+
+    // Subtitle page
+    LTEXT           "글꼴:", IDC_FONT_LABEL, 15, 36, 40, 9
+    COMBOBOX        IDC_FONT_COMBO, 55, 34, 250, 200, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "크기:", IDC_SIZE_LABEL, 15, 56, 40, 9
+    EDITTEXT        IDC_SIZE_EDIT, 55, 54, 40, 13, ES_NUMBER | ES_AUTOHSCROLL
+    CONTROL         "", IDC_SIZE_SPIN, "msctls_updown32", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS, 0, 0, 10, 13
+    LTEXT           "(10~150, 기본 38)", IDC_SIZE_UNIT, 100, 56, 100, 9
+    LTEXT           "외곽선:", IDC_OUTLINE_LABEL, 15, 76, 40, 9
+    COMBOBOX        IDC_OUTLINE_COMBO, 55, 74, 70, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "글꼴 미리 보기", IDC_PREVIEW_LABEL, 15, 96, 100, 9
+    CONTROL         "", IDC_PREVIEW, "Static", SS_CENTER | SS_CENTERIMAGE | SS_NOPREFIX | WS_BORDER, 15, 107, 290, 36
+    LTEXT           "적용을 누르면 재생 중인 영상의 자막에 바로 반영됩니다.\n크기는 창 높이 720을 기준으로 한 값이며, 창 크기에 따라 함께 변합니다.\nASS 자막처럼 자체 스타일이 있는 자막은 그 글꼴, 크기, 외곽선을 우선합니다.", IDC_SUBTITLE_HINT, 15, 150, 290, 36
+
+    // Shortcut page
+    CONTROL         "", IDC_SHORTCUT_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 15, 32, 290, 140
+    LTEXT           "", IDC_SHORTCUT_STATUS, 15, 176, 290, 9, SS_NOPREFIX
+    PUSHBUTTON      "변경", IDC_SHORTCUT_CHANGE, 15, 190, 55, 15
+    PUSHBUTTON      "지우기", IDC_SHORTCUT_CLEAR, 75, 190, 55, 15
+    PUSHBUTTON      "모두 기본값으로", IDC_SHORTCUT_DEFAULTS, 235, 190, 70, 15
+
+    DEFPUSHBUTTON   "확인", IDOK, 155, 216, 50, 15
+    PUSHBUTTON      "취소", IDCANCEL, 209, 216, 50, 15
+    PUSHBUTTON      "적용", IDC_APPLY, 263, 216, 50, 15
+END

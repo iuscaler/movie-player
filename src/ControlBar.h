@@ -10,6 +10,7 @@
 #include <wrl/client.h>
 
 #include <optional>
+#include <vector>
 #include <string>
 
 #include "MpvPlayer.h"
@@ -74,6 +75,7 @@ private:
         int volumePixels = 0;
         int loopStartPixels = -1;  // -1 when not set.
         int loopEndPixels = -1;
+        std::vector<int> chapterPixels;
         bool paused = false;
         bool fullscreen = false;
         Part hovered = Part::None;
@@ -103,6 +105,7 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> timeFormat_;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> volumeFormat_;
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> playIcon_;
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> markIcon_;
 
     Microsoft::WRL::ComPtr<ID3D11Device> d3dDevice_;
     Microsoft::WRL::ComPtr<IDXGIFactory2> dxgiFactory_;

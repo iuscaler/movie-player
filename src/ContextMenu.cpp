@@ -3,6 +3,8 @@
 #include <array>
 #include <cwchar>
 
+#include "TimeFormat.h"
+
 namespace {
 
 // Track ids are added to these bases to form menu command ids.
@@ -12,9 +14,9 @@ constexpr UINT kSubtitleOff = 3;
 constexpr UINT kResetSubtitleDelay = 4;
 constexpr UINT kEncodingKorean = 5;
 constexpr UINT kEncodingAuto = 6;
-constexpr UINT kRegisterAssociation = 7;
-constexpr UINT kUnregisterAssociation = 8;
-constexpr UINT kToggleLoop = 9;
+constexpr UINT kOpenSettings = 7;
+constexpr UINT kLoopStart = 9;
+constexpr UINT kLoopEnd = 15;
 constexpr UINT kClearLoop = 10;
 constexpr UINT kStepForward = 11;
 constexpr UINT kStepBackward = 12;
@@ -32,8 +34,10 @@ constexpr std::array<AspectMode, 5> kAspects{AspectMode::Original, AspectMode::R
 constexpr std::array<int, 4> kRotations{0, 90, 180, 270};
 constexpr std::array<VideoAdjustment, kVideoAdjustmentCount> kAdjustments{
     VideoAdjustment::Brightness, VideoAdjustment::Contrast, VideoAdjustment::Saturation, VideoAdjustment::Hue, VideoAdjustment::Gamma};
-constexpr std::array<const wchar_t*, kVideoAdjustmentCount> kLowerKeys{L"Q", L"E", L"T", L"U", L"O"};
-constexpr std::array<const wchar_t*, kVideoAdjustmentCount> kRaiseKeys{L"W", L"R", L"Y", L"I", L"P"};
+constexpr std::array<ShortcutAction, kVideoAdjustmentCount> kLowerActions{
+    ShortcutAction::BrightnessDown, ShortcutAction::ContrastDown, ShortcutAction::SaturationDown, ShortcutAction::HueDown, ShortcutAction::GammaDown};
+constexpr std::array<ShortcutAction, kVideoAdjustmentCount> kRaiseActions{
+    ShortcutAction::BrightnessUp, ShortcutAction::ContrastUp, ShortcutAction::SaturationUp, ShortcutAction::HueUp, ShortcutAction::GammaUp};
 constexpr UINT kAudioTrackBase = 20000;
 
 // '&' marks a shortcut letter in menu text, so a literal one has to be doubled.
@@ -53,6 +57,12 @@ void AddItem(HMENU menu, UINT id, const std::wstring& text, bool checked = false
     flags |= checked ? MF_CHECKED : MF_UNCHECKED;
     flags |= enabled ? MF_ENABLED : MF_GRAYED;
     AppendMenuW(menu, flags, id, text.c_str());
+}
+
+// Shows the action's current key at the right of the menu item, if it has one.
+std::wstring WithKey(const std::wstring& label, const ShortcutTable& shortcuts, ShortcutAction action) {
+    const KeyChord chord = shortcuts[static_cast<size_t>(action)];
+    return chord == kNoKey ? label : label + L"\t" + KeyChordName(chord);
 }
 
 HMENU BuildSubtitleMenu(const PlaybackState& state, bool fileOpen) {
@@ -95,7 +105,7 @@ HMENU BuildAudioMenu(const PlaybackState& state) {
     return menu;
 }
 
-HMENU BuildPlaybackMenu(const PlaybackState& state, bool fileOpen) {
+HMENU BuildPlaybackMenu(const PlaybackState& state, bool fileOpen, const ShortcutTable& shortcuts) {
     HMENU menu = CreatePopupMenu();
     HMENU speed = CreatePopupMenu();
     for (size_t i = 0; i < kSpeeds.size(); ++i) {
@@ -105,16 +115,17 @@ HMENU BuildPlaybackMenu(const PlaybackState& state, bool fileOpen) {
     }
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(speed), L"배속");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    const wchar_t* loopLabel = !state.loopStart ? L"구간 반복 시작 지정\tL" : !state.loopEnd ? L"구간 반복 끝 지정\tL" : L"구간 반복 해제\tL";
-    AddItem(menu, kToggleLoop, loopLabel, false, fileOpen);
-    AddItem(menu, kClearLoop, L"구간 지정 취소", false, state.loopStart.has_value());
+    AddItem(menu, kLoopStart, WithKey(L"구간 반복 시작 지정", shortcuts, ShortcutAction::LoopStart), false, fileOpen);
+    AddItem(menu, kLoopEnd, WithKey(L"구간 반복 끝 지정", shortcuts, ShortcutAction::LoopEnd), false, fileOpen);
+    AddItem(menu, kClearLoop, WithKey(L"구간 반복 해제", shortcuts, ShortcutAction::LoopClear), false,
+            state.loopStart.has_value() || state.loopEnd.has_value());
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AddItem(menu, kStepForward, L"다음 프레임\tF", false, fileOpen);
-    AddItem(menu, kStepBackward, L"이전 프레임\tD", false, fileOpen);
+    AddItem(menu, kStepForward, WithKey(L"다음 프레임", shortcuts, ShortcutAction::FrameForward), false, fileOpen);
+    AddItem(menu, kStepBackward, WithKey(L"이전 프레임", shortcuts, ShortcutAction::FrameBackward), false, fileOpen);
     return menu;
 }
 
-HMENU BuildVideoMenu(const PlaybackState& state) {
+HMENU BuildVideoMenu(const PlaybackState& state, const ShortcutTable& shortcuts) {
     HMENU menu = CreatePopupMenu();
     HMENU aspect = CreatePopupMenu();
     for (size_t i = 0; i < kAspects.size(); ++i) {
@@ -136,13 +147,13 @@ HMENU BuildVideoMenu(const PlaybackState& state) {
         anyAdjusted = anyAdjusted || value != 0;
         wchar_t lower[64];
         wchar_t raise[64];
-        swprintf_s(lower, L"%s 낮추기 (현재 %+d)\t%s", VideoAdjustmentLabel(kAdjustments[i]), value, kLowerKeys[i]);
-        swprintf_s(raise, L"%s 높이기 (현재 %+d)\t%s", VideoAdjustmentLabel(kAdjustments[i]), value, kRaiseKeys[i]);
-        AddItem(adjust, kAdjustBase + static_cast<UINT>(i) * 2, lower);
-        AddItem(adjust, kAdjustBase + static_cast<UINT>(i) * 2 + 1, raise);
+        swprintf_s(lower, L"%s 낮추기 (현재 %+d)", VideoAdjustmentLabel(kAdjustments[i]), value);
+        swprintf_s(raise, L"%s 높이기 (현재 %+d)", VideoAdjustmentLabel(kAdjustments[i]), value);
+        AddItem(adjust, kAdjustBase + static_cast<UINT>(i) * 2, WithKey(lower, shortcuts, kLowerActions[i]));
+        AddItem(adjust, kAdjustBase + static_cast<UINT>(i) * 2 + 1, WithKey(raise, shortcuts, kRaiseActions[i]));
     }
     AppendMenuW(adjust, MF_SEPARATOR, 0, nullptr);
-    AddItem(adjust, kResetVideo, L"모두 초기화\tBackspace", false, anyAdjusted);
+    AddItem(adjust, kResetVideo, WithKey(L"모두 초기화", shortcuts, ShortcutAction::VideoReset), false, anyAdjusted);
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(adjust), L"영상 조정");
     return menu;
 }
@@ -169,8 +180,10 @@ MenuChoice ChoiceFromCommand(UINT command) {
     } else if (command >= kSpeedBase && command < kSpeedBase + kSpeeds.size()) {
         choice.action = MenuChoice::Action::SetSpeed;
         choice.speed = kSpeeds[command - kSpeedBase];
-    } else if (command == kToggleLoop) {
-        choice.action = MenuChoice::Action::ToggleLoop;
+    } else if (command == kLoopStart) {
+        choice.action = MenuChoice::Action::LoopStart;
+    } else if (command == kLoopEnd) {
+        choice.action = MenuChoice::Action::LoopEnd;
     } else if (command == kClearLoop) {
         choice.action = MenuChoice::Action::ClearLoop;
     } else if (command == kStepForward) {
@@ -192,15 +205,28 @@ MenuChoice ChoiceFromCommand(UINT command) {
     } else if (command == kEncodingKorean || command == kEncodingAuto) {
         choice.action = MenuChoice::Action::SetSubtitleEncoding;
         choice.encoding = command == kEncodingKorean ? SubtitleEncoding::Korean : SubtitleEncoding::Auto;
-    } else if (command == kRegisterAssociation) {
-        choice.action = MenuChoice::Action::RegisterFileAssociation;
-    } else if (command == kUnregisterAssociation) {
-        choice.action = MenuChoice::Action::UnregisterFileAssociation;
+    } else if (command == kOpenSettings) {
+        choice.action = MenuChoice::Action::OpenSettings;
     }
     return choice;
 }
 
 }  // namespace
+
+std::optional<size_t> ShowChapterMenu(HWND owner, POINT screenCenter, const PlaybackState& state) {
+    HMENU menu = CreatePopupMenu();
+    for (size_t i = 0; i < state.chapters.size(); ++i) {
+        const Chapter& chapter = state.chapters[i];
+        const bool current = state.chapter && *state.chapter == static_cast<int64_t>(i);
+        // Item ids start at 1, because 0 means nothing was picked.
+        AddItem(menu, static_cast<UINT>(i) + 1, EscapeForMenu(chapter.title) + L"\t" + FormatTime(chapter.time), current);
+    }
+    SetForegroundWindow(owner);
+    const UINT command = static_cast<UINT>(TrackPopupMenu(menu, TPM_RETURNCMD | TPM_CENTERALIGN | TPM_VCENTERALIGN, screenCenter.x,
+                                                           screenCenter.y, 0, owner, nullptr));
+    DestroyMenu(menu);
+    return command == 0 ? std::nullopt : std::optional<size_t>(command - 1);
+}
 
 const wchar_t* AspectLabel(AspectMode aspect) {
     switch (aspect) {
@@ -253,7 +279,7 @@ std::wstring TrackLabel(const MediaTrack& track) {
     return label;
 }
 
-MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& state, bool fileAssociationRegistered) {
+MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& state, const ShortcutTable& shortcuts) {
     const bool fileOpen = !state.fileName.empty();
     HMENU menu = CreatePopupMenu();
     AddItem(menu, kOpenVideo, L"파일 열기...");
@@ -268,14 +294,10 @@ MenuChoice ShowContextMenu(HWND owner, POINT screenPoint, const PlaybackState& s
         return false;
     }();
     AppendMenuW(menu, MF_POPUP | (hasAudio ? MF_ENABLED : MF_GRAYED), reinterpret_cast<UINT_PTR>(BuildAudioMenu(state)), L"오디오");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(BuildPlaybackMenu(state, fileOpen)), L"재생");
-    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(BuildVideoMenu(state)), L"영상");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(BuildPlaybackMenu(state, fileOpen, shortcuts)), L"재생");
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(BuildVideoMenu(state, shortcuts)), L"영상");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    if (fileAssociationRegistered) {
-        AddItem(menu, kUnregisterAssociation, L"탐색기 연결 프로그램에서 해제");
-    } else {
-        AddItem(menu, kRegisterAssociation, L"탐색기 연결 프로그램에 등록...");
-    }
+    AddItem(menu, kOpenSettings, WithKey(L"설정...", shortcuts, ShortcutAction::OpenSettings));
 
     // A popup menu only closes on an outside click if its owner is in the foreground.
     SetForegroundWindow(owner);
